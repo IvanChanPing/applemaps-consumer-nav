@@ -1,0 +1,559 @@
+package com.example.applemaps.map
+
+import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
+import android.view.MotionEvent
+import android.webkit.ConsoleMessage
+import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
+import android.webkit.WebSettings
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import androidx.annotation.DrawableRes
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.content.ContextCompat
+import com.example.applemaps.BuildConfig
+import com.example.applemaps.R
+import com.example.applemaps.diag.DiagLog
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.ByteArrayOutputStream
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.roundToInt
+
+private const val CONSUMER_URL = "https://maps.apple.com/"
+
+sealed interface ConsumerRendererState {
+    data object Loading : ConsumerRendererState
+    data object Ready : ConsumerRendererState
+    data class Error(val title: String, val detail: String) : ConsumerRendererState
+}
+
+data class ConsumerSelectedPlace(
+    val id: String,
+    val title: String,
+    val category: String,
+    val coordinate: MapCoordinate,
+    val source: String,
+)
+
+/**
+ * Persistent controller for the consumer `maps.apple.com` renderer.
+ *
+ * The WebView is an Activity-level sibling below the transparent Compose UI. This keeps Apple tile/WebGL
+ * state mounted while the copied sheets change. Compose controls receive their own taps; [dispatchTouchEvent]
+ * forwards only gestures whose first down lands above the active sheet, then preserves that gesture's complete
+ * stream for the WebView. The injected adapter updates every app-owned map node during camera movement and
+ * deselects Apple's native annotation after handing selection to the custom animated marker.
+ * The page creates its own consumer session; this class never accepts or logs a developer token.
+ */
+class ConsumerMapController(private val context: Context) : LocationListener {
+    private val main = Handler(Looper.getMainLooper())
+    private val rendererState = mutableStateOf<ConsumerRendererState>(ConsumerRendererState.Loading)
+    val state: State<ConsumerRendererState> get() = rendererState
+    private val locationManager = context.getSystemService(LocationManager::class.java)
+    private var container: FrameLayout? = null
+    private var webView: WebView? = null
+    private var ready = false
+    private var resumed = false
+    private var locationEnabled = false
+    private var mapType = "standard"
+    private var currentCenter = MapCoordinate(37.7749, -122.4194)
+    private var selectedCallback: (ConsumerSelectedPlace) -> Unit = {}
+    private var longPressCallback: (MapCoordinate) -> Unit = {}
+    private var gestureCallback: () -> Unit = {}
+    private var desiredPin: JSONObject? = null
+    private var desiredRoutes: JSONObject? = null
+    private var desiredProgress = 0f
+    private var desiredNav: JSONObject? = null
+    private var desiredUserLocation: MapCoordinate? = null
+    private var inputBottomInsetPx = 0f
+    private val navArrowDataUrl by lazy { drawableDataUrl(R.drawable.ic_nav_arrow) }
+
+    fun attachTo(target: FrameLayout) {
+        container = target
+        if (webView == null) recreateRenderer()
+    }
+
+    fun bind(
+        onSelected: (ConsumerSelectedPlace) -> Unit,
+        onLongPress: (MapCoordinate) -> Unit,
+        onGesture: () -> Unit,
+    ) {
+        selectedCallback = onSelected
+        longPressCallback = onLongPress
+        gestureCallback = onGesture
+    }
+
+    fun unbind() {
+        selectedCallback = {}
+        longPressCallback = {}
+        gestureCallback = {}
+    }
+
+    fun onResume() {
+        resumed = true
+        webView?.onResume()
+        updateLocationSubscription()
+    }
+
+    fun onPause() {
+        resumed = false
+        locationManager.removeUpdates(this)
+        webView?.onPause()
+    }
+
+    fun destroy() {
+        locationManager.removeUpdates(this)
+        ready = false
+        webView?.let(::destroyWebView)
+        webView = null
+        container = null
+    }
+
+    fun reload() = recreateRenderer()
+
+    /** Updates the bottom screen region owned by the currently visible Compose sheet/system navigation bar. */
+    fun setInputBottomInsetPx(value: Float) {
+        inputBottomInsetPx = value.coerceAtLeast(0f)
+    }
+
+    /** Synchronously admits a map-region down, then leaves the complete unmodified gesture stream to WebView. */
+    fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val view = webView ?: return false
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+            event.y >= (view.height - inputBottomInsetPx).coerceAtLeast(0f)
+        ) return false
+        return view.dispatchTouchEvent(event)
+    }
+
+    fun center(): MapCoordinate = currentCenter
+
+    fun lastKnownLocation(): MapCoordinate? {
+        if (!hasLocationPermission()) return null
+        return runCatching {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+                .mapNotNull(locationManager::getLastKnownLocation)
+                .maxByOrNull(Location::getTime)
+                ?.let { MapCoordinate(it.latitude, it.longitude) }
+        }.getOrNull()
+    }
+
+    fun setMapType(value: String) {
+        mapType = when (value.lowercase()) {
+            "satellite" -> "satellite"
+            "hybrid" -> "hybrid"
+            else -> "standard"
+        }
+        call("setMapType", JSONObject.quote(mapType))
+        DiagLog.log("CONSUMERMAP", "event=map_type", "value=$mapType")
+    }
+
+    fun setTrafficEnabled(enabled: Boolean) {
+        DiagLog.log("CONSUMERMAP", "event=traffic_request", "enabled=${if (enabled) 1 else 0}", "supported=0")
+    }
+
+    fun setBuildings3DEnabled(enabled: Boolean) {
+        DiagLog.log("CONSUMERMAP", "event=buildings_request", "enabled=${if (enabled) 1 else 0}", "supported=0")
+    }
+
+    fun setPin(
+        coordinate: MapCoordinate?,
+        showBalloon: Boolean,
+        tint: Color,
+        face: ImageBitmap?,
+        label: String,
+    ) {
+        desiredPin = coordinate?.let {
+            JSONObject()
+                .put("id", "app-pin:${it.latitude},${it.longitude}")
+                .put("title", label.take(160))
+                .put("category", if (face == null) "Marked Location" else "Selected place")
+                .put("latitude", it.latitude)
+                .put("longitude", it.longitude)
+                .put("color", String.format("#%06X", 0xFFFFFF and tint.toArgb()))
+                .put("face", face?.let(::bitmapDataUrl) ?: "")
+                .put("expanded", showBalloon)
+        }
+        call("setPin", desiredPin?.toString() ?: "null")
+    }
+
+    fun drawRoutes(
+        routes: List<Route>,
+        labels: List<Pair<String, String>>?,
+        bottomPaddingPx: Int,
+        fitAndReveal: Boolean,
+    ) {
+        desiredRoutes = JSONObject()
+            .put("bottomPadding", bottomPaddingPx.coerceAtLeast(0))
+            .put("reveal", fitAndReveal)
+            .put("routes", JSONArray().apply {
+                routes.forEachIndexed { routeIndex, route ->
+                    put(JSONObject()
+                        .put("points", JSONArray().apply {
+                            route.points.forEach { put(JSONArray().put(it.latitude).put(it.longitude)) }
+                        })
+                        .put("traffic", JSONArray().apply {
+                            route.trafficIntervals.forEach { interval ->
+                                put(JSONObject().put("start", interval.startPointIndex).put("end", interval.endPointIndex)
+                                    .put("level", interval.level.name.lowercase()))
+                            }
+                        })
+                        .put("time", labels?.getOrNull(routeIndex)?.first ?: "")
+                        .put("subtitle", labels?.getOrNull(routeIndex)?.second ?: ""))
+                }
+            })
+        desiredProgress = 0f
+        call("setRoutes", desiredRoutes.toString())
+        DiagLog.log("CONSUMERMAP", "event=routes", "count=${routes.size}", "reveal=${if (fitAndReveal) 1 else 0}")
+    }
+
+    fun clearRoutes() {
+        desiredRoutes = null
+        desiredProgress = 0f
+        call("clearRoutes")
+        DiagLog.log("CONSUMERMAP", "event=routes_clear")
+    }
+
+    fun setRouteProgress(progress: Float) {
+        desiredProgress = progress.coerceIn(0f, 1f)
+        call("setRouteProgress", desiredProgress.toString())
+    }
+
+    fun centerOn(
+        coordinate: MapCoordinate,
+        zoom: Double? = null,
+        rotation: Double? = null,
+        bottomPaddingPx: Int = 0,
+        animated: Boolean = true,
+    ) {
+        val payload = JSONObject()
+            .put("latitude", coordinate.latitude)
+            .put("longitude", coordinate.longitude)
+            .put("distance", zoom?.let { zoomToCameraDistance(it, coordinate.latitude) })
+            .put("rotation", rotation)
+            .put("bottomPadding", bottomPaddingPx.coerceAtLeast(0))
+            .put("animated", animated)
+        call("setCamera", payload.toString())
+        DiagLog.log("CONSUMERMAP", "event=camera", "zoom=${zoom ?: -1.0}", "rotation=${rotation ?: -1.0}")
+    }
+
+    fun setNavigationPose(coordinate: MapCoordinate, bearing: Double, follow: Boolean) {
+        desiredNav = JSONObject()
+            .put("latitude", coordinate.latitude)
+            .put("longitude", coordinate.longitude)
+            .put("bearing", bearing)
+            .put("image", navArrowDataUrl)
+        call("setNavigationPose", desiredNav.toString())
+        if (follow) centerOn(coordinate, zoom = 18.0, rotation = bearing, animated = false)
+    }
+
+    fun clearNavigation() {
+        desiredNav = null
+        call("clearNavigation")
+    }
+
+    fun setLocationEnabled(enabled: Boolean) {
+        if (locationEnabled == enabled) return
+        locationEnabled = enabled
+        if (!enabled) {
+            locationManager.removeUpdates(this)
+            desiredUserLocation = null
+            call("setUserLocation", "null")
+        } else {
+            lastKnownLocation()?.let(::publishLocation)
+            updateLocationSubscription()
+        }
+    }
+
+    override fun onLocationChanged(location: Location) = publishLocation(MapCoordinate(location.latitude, location.longitude))
+    @Deprecated("Deprecated in Java") override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+    override fun onProviderEnabled(provider: String) = Unit
+    override fun onProviderDisabled(provider: String) = Unit
+
+    @SuppressLint("MissingPermission")
+    private fun updateLocationSubscription() {
+        locationManager.removeUpdates(this)
+        if (!resumed || !locationEnabled || !hasLocationPermission()) return
+        runCatching {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+                if (locationManager.isProviderEnabled(provider)) locationManager.requestLocationUpdates(provider, 1_000L, 1f, this)
+            }
+        }.onFailure { DiagLog.log("CONSUMERMAP", "event=location_error", "type=${it.javaClass.simpleName}") }
+    }
+
+    private fun publishLocation(coordinate: MapCoordinate) {
+        desiredUserLocation = coordinate
+        call("setUserLocation", JSONObject().put("latitude", coordinate.latitude).put("longitude", coordinate.longitude).toString())
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_COARSE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    private fun zoomToCameraDistance(zoom: Double, latitude: Double): Double =
+        (40_000_000.0 * cos(Math.toRadians(latitude)).coerceAtLeast(0.2) / 2.0.pow(zoom)).coerceAtLeast(40.0)
+
+    private fun call(name: String, argument: String? = null) {
+        if (!ready) return
+        val js = if (argument == null) "window.__consumerNavAdapter&&window.__consumerNavAdapter.$name()"
+            else "window.__consumerNavAdapter&&window.__consumerNavAdapter.$name($argument)"
+        main.post { webView?.evaluateJavascript(js, null) }
+    }
+
+    private fun syncDesiredState() {
+        setMapType(mapType)
+        call("setPin", desiredPin?.toString() ?: "null")
+        desiredRoutes?.let { call("setRoutes", it.toString()); call("setRouteProgress", desiredProgress.toString()) }
+        desiredNav?.let { call("setNavigationPose", it.toString()) }
+        desiredUserLocation?.let { call("setUserLocation", JSONObject().put("latitude", it.latitude).put("longitude", it.longitude).toString()) }
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private fun recreateRenderer() {
+        main.post {
+            ready = false
+            rendererState.value = ConsumerRendererState.Loading
+            webView?.let(::destroyWebView)
+            val target = container ?: return@post
+            val view = WebView(context).apply {
+                WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
+                setBackgroundColor(android.graphics.Color.rgb(246, 243, 234))
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                settings.setSupportZoom(false)
+                settings.builtInZoomControls = false
+                settings.displayZoomControls = false
+                settings.setGeolocationEnabled(false)
+                settings.setSupportMultipleWindows(false)
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                addJavascriptInterface(Bridge(), "AndroidConsumerNav")
+                webViewClient = client
+                webChromeClient = chrome
+                loadUrl(CONSUMER_URL)
+            }
+            webView = view
+            target.addView(view, 0, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
+            if (resumed) view.onResume()
+            DiagLog.log("CONSUMERMAP", "event=load", "sdk=${Build.VERSION.SDK_INT}")
+        }
+    }
+
+    private fun destroyWebView(view: WebView) {
+        (view.parent as? FrameLayout)?.removeView(view)
+        view.removeJavascriptInterface("AndroidConsumerNav")
+        view.stopLoading()
+        view.webChromeClient = null
+        view.webViewClient = WebViewClient()
+        view.destroy()
+    }
+
+    private val client = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+            if (!request.isForMainFrame) return false
+            return !request.url.isAllowedConsumerPage()
+        }
+
+        override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+            ready = false
+            rendererState.value = ConsumerRendererState.Loading
+            DiagLog.log("CONSUMERMAP", "event=page_started")
+        }
+
+        override fun onPageFinished(view: WebView, url: String?) {
+            if (url?.let(Uri::parse)?.isAllowedConsumerPage() == true) view.evaluateJavascript(CONSUMER_NAV_SCRIPT, null)
+        }
+
+        override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+            if (request.isForMainFrame) rendererState.value = ConsumerRendererState.Error("maps.apple.com", error.description.toString().take(160))
+        }
+
+        override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+            if (request.isForMainFrame) rendererState.value = ConsumerRendererState.Error("maps.apple.com", "HTTP ${errorResponse.statusCode}")
+        }
+
+        override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+            DiagLog.log("CONSUMERMAP", "event=renderer_gone", "crashed=${if (detail.didCrash()) 1 else 0}")
+            if (webView === view) webView = null
+            (view.parent as? FrameLayout)?.removeView(view)
+            view.destroy()
+            rendererState.value = ConsumerRendererState.Error("Map renderer stopped", "Reload the Apple map renderer")
+            return true
+        }
+    }
+
+    private val chrome = object : WebChromeClient() {
+        override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+            if (message.messageLevel() != ConsoleMessage.MessageLevel.LOG) {
+                DiagLog.log(
+                    "CONSUMERMAP",
+                    "event=console",
+                    "level=${message.messageLevel()}",
+                    "line=${message.lineNumber()}",
+                    "source=${message.sourceId().takeLast(80)}",
+                    "message=${message.message().take(180)}",
+                )
+            }
+            return true
+        }
+    }
+
+    private inner class Bridge {
+        @JavascriptInterface fun onReady() = main.post {
+            ready = true
+            rendererState.value = ConsumerRendererState.Ready
+            syncDesiredState()
+            DiagLog.log("CONSUMERMAP", "event=ready")
+        }
+
+        @JavascriptInterface fun onSelected(raw: String) = main.post {
+            val p = runCatching { JSONObject(raw.take(2_048)) }.getOrNull() ?: return@post
+            val lat = p.optDouble("latitude", Double.NaN)
+            val lon = p.optDouble("longitude", Double.NaN)
+            if (!lat.isFinite() || !lon.isFinite() || lat !in -90.0..90.0 || lon !in -180.0..180.0) return@post
+            selectedCallback(ConsumerSelectedPlace(
+                id = p.optString("id").take(180),
+                title = p.optString("title", "Marked Location").take(160),
+                category = p.optString("category", "Apple place").take(120),
+                coordinate = MapCoordinate(lat, lon),
+                source = p.optString("source", "apple-place").take(40),
+            ))
+            DiagLog.log("CONSUMERMAP", "event=selection", "source=${p.optString("source", "unknown").take(40)}")
+        }
+
+        @JavascriptInterface fun onLongPress(raw: String) = main.post {
+            val p = runCatching { JSONObject(raw.take(256)) }.getOrNull() ?: return@post
+            val lat = p.optDouble("latitude", Double.NaN)
+            val lon = p.optDouble("longitude", Double.NaN)
+            if (lat.isFinite() && lon.isFinite() && lat in -90.0..90.0 && lon in -180.0..180.0) {
+                longPressCallback(MapCoordinate(lat, lon))
+                DiagLog.log("CONSUMERMAP", "event=long_press")
+            }
+        }
+
+        @JavascriptInterface fun onGesture() = main.post(gestureCallback)
+
+        @JavascriptInterface fun onCamera(raw: String) = main.post {
+            val p = runCatching { JSONObject(raw.take(512)) }.getOrNull() ?: return@post
+            val lat = p.optDouble("latitude", Double.NaN)
+            val lon = p.optDouble("longitude", Double.NaN)
+            if (lat.isFinite() && lon.isFinite()) currentCenter = MapCoordinate(lat, lon)
+        }
+
+        @JavascriptInterface fun onError(title: String, detail: String) = main.post {
+            rendererState.value = ConsumerRendererState.Error(title.take(80), detail.take(160))
+            DiagLog.log("CONSUMERMAP", "event=adapter_error", "title=${title.take(80)}")
+        }
+    }
+
+    private fun bitmapDataUrl(image: ImageBitmap): String = bitmapDataUrl(image.asAndroidBitmap())
+
+    private fun bitmapDataUrl(bitmap: Bitmap): String = ByteArrayOutputStream().use { output ->
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+        "data:image/png;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+    }
+
+    private fun drawableDataUrl(@DrawableRes id: Int): String {
+        val drawable = ContextCompat.getDrawable(context, id) ?: return ""
+        val side = (48 * context.resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
+        val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
+        drawable.setBounds(0, 0, side, side)
+        drawable.draw(Canvas(bitmap))
+        return bitmapDataUrl(bitmap)
+    }
+}
+
+private fun Uri.isAllowedConsumerPage(): Boolean = scheme == "https" && host == "maps.apple.com"
+
+private val CONSUMER_NAV_SCRIPT = """
+(() => {
+  'use strict';
+  const bridge = () => window.AndroidConsumerNav;
+  const text = v => typeof v === 'string' ? v : '';
+  if (window.__consumerNavAdapter) { window.__consumerNavAdapter.reportReady(); return; }
+  const state = {map:null,pin:null,pinData:null,user:null,nav:null,routeOverlays:[],routePrimary:[],routeLabels:[],attempts:0,raf:false,tracking:false,trackRaf:0,pointer:null,gestureSent:false};
+  const style = document.createElement('style');
+  style.id = 'consumer-nav-style';
+  style.textContent = `
+    #shell-navigation,#shell-tray,#shell-map-controls{display:none!important}
+    .consumer-map-node{position:fixed;z-index:2147483000;pointer-events:auto;transform:translate(-50%,-50%)}
+    #consumer-pin{width:59px;height:70px;border:0;padding:0;background:transparent;transform-origin:50% 100%;filter:drop-shadow(0 3px 3px rgba(0,0,0,.28))}
+    #consumer-pin .tail{position:absolute;left:22px;top:49px;width:15px;height:15px;transform:rotate(45deg);background:var(--pin);border-right:4px solid white;border-bottom:4px solid white;box-sizing:border-box}
+    #consumer-pin .face{position:absolute;left:2px;top:0;width:55px;height:55px;border:4px solid white;border-radius:50%;box-sizing:border-box;display:grid;place-items:center;background:var(--pin);overflow:hidden}
+    #consumer-pin .face img{width:100%;height:100%;object-fit:cover}
+    #consumer-pin .core{width:16px;height:16px;border-radius:50%;background:white}
+    #consumer-pin .label{position:absolute;left:65px;top:19px;white-space:nowrap;color:#3a3a3c;font:500 13px -apple-system,sans-serif;text-shadow:0 0 3px white,0 0 3px white}
+    #consumer-pin.enter{animation:consumerPinEnter 1730ms linear both}
+    #consumer-pin.minimized{width:23px;height:23px;transform-origin:50% 50%}
+    #consumer-pin.minimized .tail,#consumer-pin.minimized .label{display:none}
+    #consumer-pin.minimized .face{left:0;top:0;width:23px;height:23px;border-width:2px}
+    @keyframes consumerPinEnter{0%,13.3%{transform:translate(-50%,-100%) scale(.39) rotate(0deg)}35%{transform:translate(-50%,-100%) scale(1.03) rotate(4deg)}58%{transform:translate(-50%,-100%) scale(.99) rotate(-2deg)}100%{transform:translate(-50%,-100%) scale(1) rotate(0deg)}}
+    #consumer-user{width:18px;height:18px;border:3px solid white;border-radius:50%;background:#0a84ff;box-shadow:0 1px 4px rgba(0,0,0,.35);pointer-events:none}
+    #consumer-nav-arrow{width:48px;height:48px;pointer-events:none;transform-origin:50% 50%}
+    .consumer-route-label{padding:6px 10px;border-radius:8px;background:white;box-shadow:0 2px 7px rgba(0,0,0,.2);font:14px -apple-system,sans-serif;white-space:nowrap;color:#8e8e93;pointer-events:none}
+    .consumer-route-label strong{display:block;color:#007aff;font-size:15px;text-align:center}
+    .consumer-route-label.selected{background:#007aff;color:rgba(255,255,255,.9)}.consumer-route-label.selected strong{color:white}
+    #consumer-destination{width:14px;height:14px;border:3px solid white;border-radius:50%;background:#007aff;box-sizing:border-box;pointer-events:none}
+  `;
+  document.head.appendChild(style);
+
+  function viewport(){
+    const h=innerHeight+'px';
+    [document.documentElement,document.body,document.querySelector('#shell-wrapper'),document.querySelector('#shell-map')].filter(Boolean).forEach(e=>{e.style.setProperty('height',h,'important');e.style.setProperty('min-height',h,'important')});
+    bridge()?.onCamera(JSON.stringify({event:'viewport',height:innerHeight}));
+  }
+  function node(id,cls){let e=document.getElementById(id);if(!e){e=document.createElement('div');e.id=id;e.className='consumer-map-node '+(cls||'');document.body.appendChild(e)}return e}
+  function point(c){return state.map?.convertCoordinateToPointOnPage(new mapkit.Coordinate(c.latitude,c.longitude))}
+  function place(e,c){const p=point(c);if(!p||!Number.isFinite(p.x)||!Number.isFinite(p.y)){e.style.display='none';return}e.style.display='block';e.style.left=p.x+'px';e.style.top=p.y+'px'}
+  function updateNodes(){state.raf=false;if(state.pin&&state.pinData)place(state.pin,state.pinData);if(state.user&&state.userData)place(state.user,state.userData);if(state.nav&&state.navData)place(state.nav,state.navData);state.routeLabels.forEach(x=>place(x.node,x.coordinate));if(state.destination)place(state.destination,state.destinationData)}
+  function queue(){if(!state.raf){state.raf=true;requestAnimationFrame(updateNodes)}}
+  function trackNodes(){if(!state.tracking)return;updateNodes();state.trackRaf=requestAnimationFrame(trackNodes)}
+  function startTracking(){if(state.tracking)return;state.tracking=true;state.trackRaf=requestAnimationFrame(trackNodes)}
+  function stopTracking(){state.tracking=false;if(state.trackRaf)cancelAnimationFrame(state.trackRaf);state.trackRaf=0;queue()}
+  function publishCamera(){const c=state.map?.center;if(c)bridge()?.onCamera(JSON.stringify({latitude:c.latitude,longitude:c.longitude,distance:state.map.cameraDistance,rotation:state.map.rotation}))}
+  function urlPlaceId(){try{return new URL(location.href).searchParams.get('place-id')||''}catch(_){return''}}
+  function emitSelection(a,initial,frames){const c=a?.coordinate;if(!c)return;const now=urlPlaceId();if((now&&now!==initial)||frames<=0){bridge()?.onSelected(JSON.stringify({id:a.placeId||now||('coordinate:'+c.latitude+','+c.longitude),title:text(a.title)||'Marked Location',category:text(a.pointOfInterestCategory)||text(a.subtitle)||'Apple place',latitude:c.latitude,longitude:c.longitude,source:'apple-place'}));return}requestAnimationFrame(()=>emitSelection(a,initial,frames-1))}
+  function setPin(p){state.pinData=p;if(!p){state.pin?.remove();state.pin=null;return}const fresh=!state.pin||state.pin.dataset.id!==p.id;if(fresh){state.pin?.remove();const e=document.createElement('button');e.id='consumer-pin';e.className='consumer-map-node';e.type='button';e.dataset.id=p.id;e.innerHTML='<span class="tail"></span><span class="face"></span><span class="label"></span>';e.addEventListener('pointerdown',x=>x.stopPropagation());e.addEventListener('click',x=>{x.preventDefault();x.stopPropagation();bridge()?.onSelected(JSON.stringify({...p,source:'app-marker'}))});document.body.appendChild(e);state.pin=e}const face=state.pin.querySelector('.face');face.innerHTML=p.face?'<img alt="" src="'+p.face+'">':'<span class="core"></span>';state.pin.querySelector('.label').textContent=p.title||'';state.pin.style.setProperty('--pin',p.color||'#ff3b30');state.pin.className='consumer-map-node '+(p.expanded?'enter':'minimized');queue()}
+  function setUserLocation(p){state.userData=p;if(!p){state.user?.remove();state.user=null;return}state.user=node('consumer-user');queue()}
+  function setNavigationPose(p){state.navData=p;state.nav=node('consumer-nav-arrow');state.nav.innerHTML='<img alt="" width="48" height="48" src="'+(p.image||'')+'">';state.nav.style.transform='translate(-50%,-50%) rotate('+p.bearing+'deg)';queue()}
+  function clearNavigation(){state.navData=null;state.nav?.remove();state.nav=null}
+  function clearRoutes(){if(state.map&&state.routeOverlays.length)state.map.removeOverlays(state.routeOverlays);state.routeOverlays=[];state.routePrimary=[];state.routeLabels.forEach(x=>x.node.remove());state.routeLabels=[];state.destination?.remove();state.destination=null}
+  function coords(raw){return raw.map(p=>new mapkit.Coordinate(p[0],p[1]))}
+  function line(points,options,primary){const o=new mapkit.PolylineOverlay(points,{style:new mapkit.Style(options)});state.map.addOverlay(o);state.routeOverlays.push(o);if(primary)state.routePrimary.push(o);return o}
+  function trafficColor(level){return level==='slow'?'#ff9f0a':level==='heavy'?'#ff3b30':level==='severe'?'#a80000':'#007aff'}
+  function setRoutes(payload){clearRoutes();if(!state.map||!payload?.routes?.length)return;const all=[];payload.routes.forEach((r,i)=>{const c=coords(r.points);if(c.length<2)return;all.push(...c);if(i>0){line(c,{strokeColor:'#8e8e93',strokeOpacity:.62,lineWidth:4.5,lineCap:'round',lineJoin:'round'},false)}else{line(c,{strokeColor:'#ffffff',lineWidth:10,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true);if(r.traffic?.length){r.traffic.forEach(t=>{const seg=c.slice(Math.max(0,t.start),Math.min(c.length,t.end+1));if(seg.length>1)line(seg,{strokeColor:trafficColor(t.level),lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)})}else line(c,{strokeColor:'#007aff',lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)}if(r.time){const n=document.createElement('div');n.className='consumer-map-node consumer-route-label '+(i===0?'selected':'');n.innerHTML='<strong></strong><span></span>';n.querySelector('strong').textContent=r.time;n.querySelector('span').textContent=r.subtitle||'';document.body.appendChild(n);state.routeLabels.push({node:n,coordinate:r.points[Math.floor(r.points.length/2)]&&{latitude:r.points[Math.floor(r.points.length/2)][0],longitude:r.points[Math.floor(r.points.length/2)][1]}})}});const last=payload.routes[0].points[payload.routes[0].points.length-1];if(last){state.destination=node('consumer-destination');state.destinationData={latitude:last[0],longitude:last[1]}}if(all.length)state.map.showItems(state.routeOverlays,{padding:{top:100,right:100,bottom:payload.bottomPadding||320,left:100}});queue();if(payload.reveal){const start=performance.now();const tick=now=>{const p=Math.min(1,(now-start)/1400);state.routePrimary.forEach(o=>o.style.strokeEnd=p);if(p<1)requestAnimationFrame(tick)};requestAnimationFrame(tick)}}
+  function setRouteProgress(t){const v=Math.max(0,Math.min(1,Number(t)||0));state.routePrimary.forEach(o=>o.style.strokeStart=v)}
+  function setMapType(type){if(state.map)state.map.mapType=['standard','satellite','hybrid'].includes(type)?type:'standard'}
+  function setCamera(p){if(!state.map||!p)return;state.map.setPadding({top:0,right:0,bottom:p.bottomPadding||0,left:0},!!p.animated);state.map.setCenterAnimated(new mapkit.Coordinate(p.latitude,p.longitude),!!p.animated);if(Number.isFinite(p.distance))state.map.setCameraDistanceAnimated(p.distance,!!p.animated);if(Number.isFinite(p.rotation))state.map.setRotationAnimated(p.rotation,!!p.animated)}
+  function reportReady(){if(state.map)bridge()?.onReady()}
+  function install(){viewport();const m=window.mapkit?.maps?.[0];if(!m){if(++state.attempts<900)requestAnimationFrame(install);else bridge()?.onError('Consumer map','Timed out waiting for maps.apple.com renderer');return}state.map=m;m.addEventListener('select',e=>{const a=e.annotation||m.selectedAnnotation;emitSelection(a,urlPlaceId(),30);requestAnimationFrame(()=>{if(m.selectedAnnotation===a)m.selectedAnnotation=null})});m.addEventListener('region-change-start',startTracking);m.addEventListener('region-change-end',()=>{stopTracking();publishCamera()});const target=document.querySelector('#shell-map')||document.body;target.addEventListener('pointerdown',e=>{state.pointer={x:e.clientX,y:e.clientY,time:performance.now()};state.gestureSent=false},true);target.addEventListener('pointermove',e=>{if(!state.pointer)return;const d=Math.hypot(e.clientX-state.pointer.x,e.clientY-state.pointer.y);if(d>6&&!state.gestureSent){state.gestureSent=true;bridge()?.onGesture()}},true);target.addEventListener('pointerup',e=>{const p=state.pointer;state.pointer=null;if(!p)return;const d=Math.hypot(e.clientX-p.x,e.clientY-p.y);if(performance.now()-p.time>=500&&d<12){const c=m.convertPointOnPageToCoordinate({x:e.clientX,y:e.clientY});if(c)bridge()?.onLongPress(JSON.stringify({latitude:c.latitude,longitude:c.longitude}))}},true);bridge()?.onReady()}
+  addEventListener('resize',viewport);visualViewport?.addEventListener('resize',viewport);
+  window.__consumerNavAdapter={setPin,setUserLocation,setNavigationPose,clearNavigation,setRoutes,clearRoutes,setRouteProgress,setMapType,setCamera,reportReady};
+  install();
+})()
+""".trimIndent()

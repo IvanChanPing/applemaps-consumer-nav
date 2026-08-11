@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Activity shell theme. Compose does the real theming; this only removes the action bar
+         and sets the window background to Apple's light app background (fill-tertiary). -->
+    <style name="Theme.AppleMaps" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFF5F5F7</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">#FFF5F5F7</item>
+    </style>
+</resources>

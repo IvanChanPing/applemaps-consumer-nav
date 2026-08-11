@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Maps</string>
+
+    <!-- Control accessibility labels — verbatim from the web app aria-labels -->
+    <string name="cd_search">Search</string>
+    <string name="cd_guides">Guides</string>
+    <string name="cd_directions">Directions</string>
+    <string name="cd_zoom_in">Zoom In</string>
+    <string name="cd_zoom_out">Zoom Out</string>
+    <string name="cd_toggle_sidebar">Toggle sidebar</string>
+    <string name="cd_current_location">Show your current location</string>
+    <string name="cd_look_around">Look Around</string>
+    <string name="cd_map_type">Change the map type</string>
+    <string name="cd_compass">Compass</string>
+    <string name="cd_options">Options</string>
+    <string name="cd_enter_fullscreen">Enter Fullscreen Mode</string>
+    <string name="cd_exit_fullscreen">Exit Fullscreen Mode</string>
+    <string name="cd_report">Report an issue</string>
+
+    <string name="label_beta">BETA</string>
+    <string name="label_search">Search Maps</string>
+    <string name="label_guides">Guides</string>
+    <string name="label_directions">Directions</string>
+    <string name="legal_privacy">Privacy</string>
+    <string name="legal_terms">Terms</string>
+    <string name="legal_legal">Legal</string>
+    <string name="legal_imagery">Imagery</string>
+
+    <!-- Map type picker -->
+    <string name="map_type_explore">Explore</string>
+    <string name="map_type_driving">Driving</string>
+    <string name="map_type_satellite">Satellite</string>
+    <string name="map_type_transit">Transit</string>
+
+    <string name="osm_attribution">© OpenStreetMap contributors</string>
+</resources>
