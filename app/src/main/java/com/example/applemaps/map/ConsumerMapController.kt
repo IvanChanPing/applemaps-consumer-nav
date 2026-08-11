@@ -12,7 +12,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.MotionEvent
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -59,12 +58,12 @@ data class ConsumerSelectedPlace(
 /**
  * Persistent controller for the consumer `maps.apple.com` renderer.
  *
- * The WebView is an Activity-level sibling below the transparent Compose UI. This keeps Apple tile/WebGL
- * state mounted while the copied sheets change. Compose controls receive their own taps; [dispatchTouchEvent]
- * forwards only gestures whose first down lands above the active sheet, then preserves that gesture's complete
- * stream for the WebView. The injected adapter retains Apple's selected annotation, creates app-origin selections
+ * The WebView is hosted directly by Compose's AndroidView interop. This keeps Apple tile/WebGL state mounted while
+ * copied sheets change and gives the WebView the platform touch stream without a sibling-event relay. The injected
+ * adapter retains Apple's selected annotation, creates app-origin selections
  * with MapKit's native marker, keeps scroll/zoom/rotation enabled, and forces the north compass visible. Directions
- * and turn-by-turn route/arrow/camera state stay on this one renderer instead of switching map engines after GO.
+ * overlays never fit or otherwise take over the consumer camera; turn-by-turn route/arrow/camera state stays on this
+ * one renderer instead of switching map engines after GO.
  * The page creates its own consumer session; this class never accepts or logs a developer token.
  */
 class ConsumerMapController(private val context: Context) : LocationListener {
@@ -87,7 +86,6 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     private var desiredProgress = 0f
     private var desiredNav: JSONObject? = null
     private var desiredUserLocation: MapCoordinate? = null
-    private var inputBottomInsetPx = 0f
     private val navArrowDataUrl by lazy { drawableDataUrl(R.drawable.ic_nav_arrow) }
 
     fun attachTo(target: FrameLayout) {
@@ -132,20 +130,6 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     }
 
     fun reload() = recreateRenderer()
-
-    /** Updates the bottom screen region owned by the currently visible Compose sheet/system navigation bar. */
-    fun setInputBottomInsetPx(value: Float) {
-        inputBottomInsetPx = value.coerceAtLeast(0f)
-    }
-
-    /** Synchronously admits a map-region down, then leaves the complete unmodified gesture stream to WebView. */
-    fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        val view = webView ?: return false
-        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
-            event.y >= (view.height - inputBottomInsetPx).coerceAtLeast(0f)
-        ) return false
-        return view.dispatchTouchEvent(event)
-    }
 
     fun center(): MapCoordinate = currentCenter
 
@@ -200,11 +184,9 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     fun drawRoutes(
         routes: List<Route>,
         labels: List<Pair<String, String>>?,
-        bottomPaddingPx: Int,
         fitAndReveal: Boolean,
     ) {
         desiredRoutes = JSONObject()
-            .put("bottomPadding", bottomPaddingPx.coerceAtLeast(0))
             .put("reveal", fitAndReveal)
             .put("routes", JSONArray().apply {
                 routes.forEachIndexed { routeIndex, route ->
@@ -224,7 +206,7 @@ class ConsumerMapController(private val context: Context) : LocationListener {
             })
         desiredProgress = 0f
         call("setRoutes", desiredRoutes.toString())
-        DiagLog.log("CONSUMERMAP", "event=routes", "count=${routes.size}", "reveal=${if (fitAndReveal) 1 else 0}", "bottom_css=${bottomPaddingPx.coerceAtLeast(0)}")
+        DiagLog.log("CONSUMERMAP", "event=routes", "count=${routes.size}", "reveal=${if (fitAndReveal) 1 else 0}", "camera=consumer")
     }
 
     fun clearRoutes() {
@@ -538,7 +520,7 @@ private val CONSUMER_NAV_SCRIPT = """
   function coords(raw){return raw.map(p=>new mapkit.Coordinate(p[0],p[1]))}
   function line(points,options,primary){const o=new mapkit.PolylineOverlay(points,{style:new mapkit.Style(options)});state.map.addOverlay(o);state.routeOverlays.push(o);if(primary)state.routePrimary.push(o);return o}
   function trafficColor(level){return level==='slow'?'#ff9f0a':level==='heavy'?'#ff3b30':level==='severe'?'#a80000':'#007aff'}
-  function setRoutes(payload){clearRoutes();if(!state.map||!payload?.routes?.length)return;const all=[];payload.routes.forEach((r,i)=>{const c=coords(r.points);if(c.length<2)return;all.push(...c);if(i>0){line(c,{strokeColor:'#8e8e93',strokeOpacity:.62,lineWidth:4.5,lineCap:'round',lineJoin:'round'},false)}else{line(c,{strokeColor:'#ffffff',lineWidth:10,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true);if(r.traffic?.length){r.traffic.forEach(t=>{const seg=c.slice(Math.max(0,t.start),Math.min(c.length,t.end+1));if(seg.length>1)line(seg,{strokeColor:trafficColor(t.level),lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)})}else line(c,{strokeColor:'#007aff',lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)}if(r.time){const n=document.createElement('div');n.className='consumer-map-node consumer-route-label '+(i===0?'selected':'');n.innerHTML='<strong></strong><span></span>';n.querySelector('strong').textContent=r.time;n.querySelector('span').textContent=r.subtitle||'';document.body.appendChild(n);state.routeLabels.push({node:n,coordinate:r.points[Math.floor(r.points.length/2)]&&{latitude:r.points[Math.floor(r.points.length/2)][0],longitude:r.points[Math.floor(r.points.length/2)][1]}})}});const last=payload.routes[0].points[payload.routes[0].points.length-1];if(last){state.destination=node('consumer-destination');state.destinationData={latitude:last[0],longitude:last[1]}}if(all.length){const bottom=Math.max(120,Number(payload.bottomPadding)||180);state.map.showItems(state.routeOverlays,{padding:new mapkit.Padding(56,56,bottom,56)})}queue();if(payload.reveal){const start=performance.now();const tick=now=>{const p=Math.max(0,Math.min(1,(now-start)/1400));state.routePrimary.forEach(o=>o.style.strokeEnd=p);if(p<1)requestAnimationFrame(tick)};requestAnimationFrame(tick)}}
+  function setRoutes(payload){clearRoutes();if(!state.map||!payload?.routes?.length)return;payload.routes.forEach((r,i)=>{const c=coords(r.points);if(c.length<2)return;if(i>0){line(c,{strokeColor:'#8e8e93',strokeOpacity:.62,lineWidth:4.5,lineCap:'round',lineJoin:'round'},false)}else{line(c,{strokeColor:'#ffffff',lineWidth:10,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true);if(r.traffic?.length){r.traffic.forEach(t=>{const seg=c.slice(Math.max(0,t.start),Math.min(c.length,t.end+1));if(seg.length>1)line(seg,{strokeColor:trafficColor(t.level),lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)})}else line(c,{strokeColor:'#007aff',lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)}if(r.time){const n=document.createElement('div');n.className='consumer-map-node consumer-route-label '+(i===0?'selected':'');n.innerHTML='<strong></strong><span></span>';n.querySelector('strong').textContent=r.time;n.querySelector('span').textContent=r.subtitle||'';document.body.appendChild(n);state.routeLabels.push({node:n,coordinate:r.points[Math.floor(r.points.length/2)]&&{latitude:r.points[Math.floor(r.points.length/2)][0],longitude:r.points[Math.floor(r.points.length/2)][1]}})}});const last=payload.routes[0].points[payload.routes[0].points.length-1];if(last){state.destination=node('consumer-destination');state.destinationData={latitude:last[0],longitude:last[1]}}queue();if(payload.reveal){const start=performance.now();const tick=now=>{const p=Math.max(0,Math.min(1,(now-start)/1400));state.routePrimary.forEach(o=>o.style.strokeEnd=p);if(p<1)requestAnimationFrame(tick)};requestAnimationFrame(tick)}}
   function setRouteProgress(t){const v=Math.max(0,Math.min(1,Number(t)||0));state.routePrimary.forEach(o=>o.style.strokeStart=v)}
   function setMapType(type){if(state.map)state.map.mapType=['standard','satellite','hybrid'].includes(type)?type:'standard'}
   function setCamera(p){if(!state.map||!p)return;state.map.setPadding(new mapkit.Padding(0,0,Number(p.bottomPadding)||0,0),!!p.animated);state.map.setCenterAnimated(new mapkit.Coordinate(p.latitude,p.longitude),!!p.animated);if(Number.isFinite(p.distance))state.map.setCameraDistanceAnimated(p.distance,!!p.animated);if(Number.isFinite(p.rotation))state.map.setRotationAnimated(p.rotation,!!p.animated)}

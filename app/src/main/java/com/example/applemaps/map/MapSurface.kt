@@ -1,5 +1,6 @@
 package com.example.applemaps.map
 
+import android.widget.FrameLayout
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,14 +19,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 
 /**
- * Compose binding for the Activity-owned consumer Apple renderer.
+ * Compose binding for the persistent consumer Apple renderer.
  *
- * Ready state draws no pixels. Its interop modifier forwards the original Android gesture stream from empty
- * map regions to the persistent WebView; later Compose siblings such as controls and sheets keep their own hits.
+ * The renderer is hosted as a real Android View inside Compose so WebView receives the platform's complete gesture
+ * stream directly. Later Compose siblings such as controls and sheets remain above it and keep their own hits.
  */
 @Composable
 fun MapSurface(
@@ -60,12 +61,11 @@ fun MapSurface(
     LaunchedEffect(buildings3DEnabled) { controller.setBuildings3DEnabled(buildings3DEnabled) }
 
     val state = controller.state.value
-    val surfaceModifier = if (state == ConsumerRendererState.Ready) {
-        modifier.pointerInteropFilter(onTouchEvent = controller::dispatchTouchEvent)
-    } else {
-        modifier
-    }
-    Box(surfaceModifier) {
+    Box(modifier) {
+        AndroidView(
+            factory = { context -> FrameLayout(context).also(controller::attachTo) },
+            modifier = Modifier.fillMaxSize(),
+        )
         when (state) {
             ConsumerRendererState.Ready -> Unit
             ConsumerRendererState.Loading -> StatusCard("Loading Apple map…", "Connecting to maps.apple.com")

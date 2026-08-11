@@ -1,16 +1,18 @@
 package com.example.applemaps.map
 
-import org.junit.Assert.assertEquals
+import java.io.File
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
-class ConsumerRouteFramingTest {
-    @Test fun physicalSheetPaddingIsConvertedToWebCssPixels() {
-        assertEquals(360, consumerCssPixels(720, 2f))
-        assertEquals(240, consumerCssPixels(720, 3f))
-    }
-
-    @Test fun invalidDensityPreservesNonNegativePhysicalPadding() {
-        assertEquals(720, consumerCssPixels(720, 0f))
-        assertEquals(0, consumerCssPixels(-20, Float.NaN))
+class ConsumerRouteCameraContractTest {
+    @Test fun routeAdapterDoesNotTakeCameraOwnership() {
+        val workingDirectory = requireNotNull(System.getProperty("user.dir"))
+        val source = generateSequence(File(workingDirectory).canonicalFile) { it.parentFile }
+            .map { File(it, "app/src/main/java/com/example/applemaps/map/ConsumerMapController.kt") }
+            .first(File::isFile)
+            .readText()
+        val setRoutes = source.substringAfter("function setRoutes(payload)").substringBefore("function setRouteProgress")
+        assertFalse(setRoutes.contains("showItems"))
+        assertFalse(setRoutes.contains("setCamera"))
     }
 }

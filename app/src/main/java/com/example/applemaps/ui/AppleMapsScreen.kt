@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -106,10 +105,6 @@ internal fun updatedRouteStops(
     index == stops.size -> stops + coordinate
     else -> null
 }
-
-/** Rejects sheet-controller sentinels so a reopening sheet can never block the whole map touch surface. */
-internal fun validMapSheetHeight(value: Float, screenHeight: Float): Float =
-    value.takeIf { it.isFinite() && screenHeight.isFinite() && screenHeight > 0f && it in 0f..screenHeight } ?: 0f
 
 // ETA bubble text for each route (time + descriptor), in the order the routes are drawn (index 0 = selected).
 private fun routeLabels(routes: List<com.example.applemaps.map.Route>): List<Pair<String, String>> = routes.mapIndexed { i, r ->
@@ -256,19 +251,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     if (place != null) lastPlace = place
     if (directionsRoutes != null) lastDir = directionsRoutes
 
-    // mapInputBottomInset — the live bottom band owned by the visible native sheet (plus system navigation).
-    // Map gestures may start only above this line; a gesture that starts on the map keeps its whole stream.
-    val activeSheetHeightPx = when {
-        navMode -> 0f
-        directionsRoutes != null -> directionsSheet.offsetPx
-        place != null -> placeSheet.offsetPx
-        else -> sheetController.offsetPx
-    }
-    val mapInputBottomInsetPx = (validMapSheetHeight(activeSheetHeightPx, deviceScreenHeightPx) +
-        WindowInsets.navigationBars.getBottom(density))
-        .coerceIn(0f, deviceScreenHeightPx)
-    SideEffect { mapController.setInputBottomInsetPx(mapInputBottomInsetPx) }
-
     // X or Back: slide the card down. TWO collapse behaviors (per the pin-restore bug):
     //  · Marked Location (long-press, no face) → the balloon shrinks to the small DOT, which stays.
     //  · POI icon (tapped category marker, has a face) → REMOVE our overlay entirely so the tile's own POI
@@ -312,9 +294,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 }
                 if (!routes.isNullOrEmpty()) {
                     directionsRoutes = routes; selectedRoute = 0
-                    // bottom padding ≈ mid-detent sheet height so the origin is framed above the sheet, not behind it
-                    RouteLayer.drawRoutes(mapController, routes, bottomPadPx = with(density) { 180.dp.roundToPx() },
-                        labels = routeLabels(routes), density = density.density)
+                    RouteLayer.drawRoutes(mapController, routes, labels = routeLabels(routes))
                     DiagLog.log("DIRECTIONS", "event=routes_ready", "request=$requestId", "count=${routes.size}", "stops=${stops.value.size}")
                 } else {
                     directionsError = "No route was found for the selected options."
@@ -494,8 +474,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             val rs = directionsRoutes
             if (rs != null) {
                 val ordered = listOf(rs[idx]) + rs.filterIndexed { i, _ -> i != idx }
-                RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false,
-                    labels = routeLabels(ordered), density = density.density)
+                RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false, labels = routeLabels(ordered))
             }
         }
         val exitDirections: () -> Unit = { directionsRoutes = null; directionsError = null; stops.value = emptyList(); RouteLayer.clear(mapController) }
@@ -514,8 +493,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                             .getOrDefault(false)
                         if (started) {
                             val ordered = listOf(rs[selectedIndex]) + rs.filterIndexed { i, _ -> i != selectedIndex }
-                            RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false,
-                                labels = routeLabels(ordered), density = density.density)
+                            RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false, labels = routeLabels(ordered))
                             navMode = true
                             navFollowing = true   // each nav session starts following the puck
                             navProgress = 0f

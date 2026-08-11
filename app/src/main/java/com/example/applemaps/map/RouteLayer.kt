@@ -5,21 +5,14 @@ object RouteLayer {
     fun drawRoutes(
         controller: ConsumerMapController,
         routes: List<Route>,
-        bottomPadPx: Int = 0,
         fitAndReveal: Boolean = true,
         labels: List<Pair<String, String>>? = null,
-        @Suppress("UNUSED_PARAMETER") density: Float = 1f,
-    ) = controller.drawRoutes(routes, labels, consumerCssPixels(bottomPadPx, density), fitAndReveal)
+    ) = controller.drawRoutes(routes, labels, fitAndReveal)
 
     fun setProgress(controller: ConsumerMapController, progress: Float) = controller.setRouteProgress(progress)
 
     fun clear(controller: ConsumerMapController) = controller.clearRoutes()
 }
-
-/** Consumer WebView camera padding is expressed in CSS pixels, while Compose reports physical pixels. */
-internal fun consumerCssPixels(physicalPixels: Int, density: Float): Int =
-    if (density.isFinite() && density > 0f) (physicalPixels / density).toInt().coerceAtLeast(0)
-    else physicalPixels.coerceAtLeast(0)
 
 internal data class TrafficColorStop(val progress: Double, val level: TrafficLevel)
 

@@ -27,7 +27,6 @@ class MainActivity : ComponentActivity() {
         PlaceRepository.initialize(applicationContext)
         mapController = ConsumerMapController(this)
         val root = FrameLayout(this)
-        mapController.attachTo(root)
         root.addView(
             ComposeView(this).apply {
                 setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)

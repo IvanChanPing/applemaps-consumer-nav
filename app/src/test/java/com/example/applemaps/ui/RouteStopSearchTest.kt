@@ -21,9 +21,4 @@ class RouteStopSearchTest {
     @Test fun staleIndexIsRejected() {
         assertNull(updatedRouteStops(listOf(first), 3, replacement))
     }
-
-    @Test fun reopeningSentinelCannotBlockTheWholeMap() {
-        assertEquals(0f, validMapSheetHeight(Float.MAX_VALUE, 1280f))
-        assertEquals(420f, validMapSheetHeight(420f, 1280f))
-    }
 }

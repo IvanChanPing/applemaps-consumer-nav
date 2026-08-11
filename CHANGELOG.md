@@ -1,5 +1,18 @@
 # Changelog
 
+- 2026-08-11 — Replaced the full-screen Compose-to-sibling touch relay with a persistent WebView hosted directly in
+  Compose `AndroidView` interop for versionCode 5 / versionName `0.6-direct-webview-touch`. Map drags, pinch, rotation,
+  taps, and long-presses now enter the WebView through the platform-owned interop path while later native controls and
+  sheets retain their hit targets. Directions route creation, route selection, and GO no longer call MapKit
+  `showItems` or carry route-fit padding, so adding overlays does not force a coast-wide camera fit; auto-uploaded
+  route telemetry reports `camera=consumer`. The former forwarding inset and its sentinel workaround were removed
+  with the obsolete framing helper, and a source-contract test rejects route-camera takeover. Files:
+  `MainActivity.kt`, `MapSurface.kt`, `ConsumerMapController.kt`, `RouteLayer.kt`, `AppleMapsScreen.kt`, focused tests,
+  version metadata, and README. JavaScript parsing, all 32 JVM tests, Android lint, and debug assembly pass. The
+  canonical and served APK are 27,259,862 bytes with SHA-256
+  `a26de148eed015ff203425655056175b03c5f78be5662352925895dbba2f089e`; a complete public HTTPS GET is byte-identical.
+  No Android device was attached, so physical-phone scrolling and Directions camera behavior remain UI-unverified.
+
 - 2026-08-11 — Repaired the screenshot-confirmed consumer-map defects for versionCode 4 / versionName
   `0.5-webview-navigation-fixes`. Apple selections now retain the consumer page's native annotation, while search and
   long-press selections use native `MarkerAnnotation` instead of the custom gray/brown DOM balloon. Directions uses
