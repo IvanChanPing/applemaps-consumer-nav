@@ -29,10 +29,11 @@ import com.example.applemaps.ui.theme.LocalAppleColors
  * category pills (173×50, 30dp icon + 17sp label), a horizontal row of editorial "bricks" (154×196 r16
  * with a bottom gradient + publisher + 16sp/800 white title), a "Recently searched" list (17sp title +
  * secondary subtitle + xmark.circle.fill clear), and the legal footer (11.7sp #8E8E93 + 11sp/600 links).
- * UI shell driven by sample data; the look/values are from the trace.
+ * The visible guide cards are backed by verified consumer Apple Maps curated IDs; Find Nearby and
+ * guide taps are forwarded to the consumer WebView while search remains owned by the native overlay.
  */
 private data class NearbyCat(val label: String, val icon: Int)
-private data class HomeBrick(val title: String, val publisher: String, val color: Color)
+private data class HomeBrick(val title: String, val publisher: String, val color: Color, val curatedId: String)
 private data class RecentSearch(val title: String, val subtitle: String)
 
 private val findNearby = listOf(
@@ -47,9 +48,9 @@ private val findNearby = listOf(
     NearbyCat("Things to Do", R.drawable.ic_binoculars_fill),
 )
 private val bricks = listOf(
-    HomeBrick("Karl-Anthony Towns' New York City Spots", "The Infatuation", Color(0xFF4A5A6A)),
-    HomeBrick("Best Coffee in Brooklyn", "The Infatuation", Color(0xFF6A4A3A)),
-    HomeBrick("A Perfect Day in Manhattan", "Lonely Planet", Color(0xFF3A5A4A)),
+    HomeBrick("Karl-Anthony Towns' New York City Spots", "Hyperlocal", Color(0xFF4A5A6A), "11233768562339234446"),
+    HomeBrick("The Best NYC Coffee Shops With Wifi", "The Infatuation", Color(0xFF6A4A3A), "14843201017831433937"),
+    HomeBrick("Best NYC coffee shops", "Lonely Planet", Color(0xFF3A5A4A), "14898935631680433283"),
 )
 private val recent = listOf(
     RecentSearch("14 Street–Union Square Station", "New York"),
@@ -57,7 +58,11 @@ private val recent = listOf(
 )
 
 @Composable
-fun HomeFrontPage(onCategory: (String) -> Unit = {}, onRecent: (String) -> Unit = {}) {
+fun HomeFrontPage(
+    onCategory: (String) -> Unit = {},
+    onGuide: (String) -> Unit = {},
+    onRecent: (String) -> Unit = {},
+) {
     val c = LocalAppleColors.current
     // NOTE: no verticalScroll here — the bottom-sheet body already scrolls; a nested vertical scroll gets
     // infinite-height constraints from the sheet and crashes (IllegalStateException). Plain Column, like PlaceCardBody.
@@ -78,7 +83,7 @@ fun HomeFrontPage(onCategory: (String) -> Unit = {}, onRecent: (String) -> Unit 
         Spacer(Modifier.height(12.dp))
         AppleAppearOnce(6) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            bricks.forEach { BrickCard(it) }
+            bricks.forEach { brick -> BrickCard(brick) { onGuide(brick.curatedId) } }
         }
         }
         Spacer(Modifier.height(20.dp))
@@ -121,8 +126,8 @@ private fun NearbyPill(cat: NearbyCat, modifier: Modifier, onClick: () -> Unit) 
 }
 
 @Composable
-private fun BrickCard(b: HomeBrick) {
-    Box(Modifier.size(width = 154.dp, height = 196.dp).clip(RoundedCornerShape(16.dp)).background(b.color)) {
+private fun BrickCard(b: HomeBrick, onClick: () -> Unit) {
+    Box(Modifier.size(width = 154.dp, height = 196.dp).clip(RoundedCornerShape(16.dp)).background(b.color).applePressScale(onClick)) {
         Box(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(120.dp)
                 .background(Brush.verticalGradient(listOf(Color.Transparent, Color(0xA6000000)))),

@@ -1,5 +1,19 @@
 # Changelog
 
+- 2026-08-11 — Mapped the home sheet's non-search content to the consumer Apple Maps web app for versionCode 6 /
+  versionName `0.7-web-home-actions`. Find Nearby uses Apple's live `/data/search` contract and the static
+  editorial samples were replaced with three verified Apple curated Guides parsed from server-rendered Guide caches.
+  Category places and Guide title/publisher/description/hero/place rows render in the app's own native tray using the
+  same bounded device-local client pattern as rich Apple place photos and Look Around. The hidden consumer page enters
+  the corresponding category/Guide state so its native markers remain synchronized; no Apple web tray is exposed.
+  Back restores the native home and selecting a row opens the existing native place card. The user-approved native
+  search overlay is unchanged. Files: `AppleBrowseClient.kt`, `AppleBrowseSheet.kt`, `HomeFrontPage.kt`,
+  `GeneratedLayout.kt`, `AppleMapsScreen.kt`, `ConsumerMapController.kt`, version metadata, README, and tests. All
+  35 JVM tests, Android lint, and debug assembly pass. The canonical, served, and HTTPS-downloaded APKs are
+  byte-identical at 27,309,014 bytes with SHA-256
+  `c1c21b4da82acf80b316cca66555911ab315e9d99d874f298143906e94e75da2`. The APK remains an untracked
+  delivery artifact so the security-audited GitHub history stays free of committed binaries.
+
 - 2026-08-11 — Replaced the full-screen Compose-to-sibling touch relay with a persistent WebView hosted directly in
   Compose `AndroidView` interop for versionCode 5 / versionName `0.6-direct-webview-touch`. Map drags, pinch, rotation,
   taps, and long-presses now enter the WebView through the platform-owned interop path while later native controls and

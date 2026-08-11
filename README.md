@@ -29,6 +29,11 @@ consumer map retains its current camera and receives map-region gestures directl
 The Directions card's blue **+ Add Stop** row opens the existing place search. Selecting a result appends a via stop;
 selecting an existing stop row uses the same search to replace it.
 
+The native search overlay remains unchanged. Find Nearby and verified Apple Guide cards retrieve their corresponding
+Apple Maps Web data directly on-device using the same bounded-client pattern as rich place photos and Look Around,
+then render the places, Guide publisher/description, and Guide hero image in the app's own native tray. The hidden
+consumer page enters the same category/Guide state so Apple's native map markers remain synchronized.
+
 Directions/place providers remain the copied app's existing providers. Google's Road Level Details map remains a
 separate optional screen and is not the basemap renderer.
 

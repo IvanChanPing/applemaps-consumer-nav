@@ -44,6 +44,8 @@ fun GeneratedAppleLayout(
     onLocate: () -> Unit = {},
     locationEnabled: Boolean = false,
     onSearch: () -> Unit = {},
+    onCategory: (String) -> Unit = {},
+    onGuide: (String) -> Unit = {},
     collapsedPeek: androidx.compose.ui.unit.Dp? = null,   // place-card state uses a shorter peek (name only)
 ) {
     Box(Modifier.fillMaxSize()) {
@@ -87,7 +89,7 @@ fun GeneratedAppleLayout(
                     )
                 }
             },
-            body = { if (placeBody != null) placeBody() else HomeFrontPage() },   // traced home front page = default sheet content
+            body = { if (placeBody != null) placeBody() else HomeFrontPage(onCategory = onCategory, onGuide = onGuide) },
         )
         }
     }

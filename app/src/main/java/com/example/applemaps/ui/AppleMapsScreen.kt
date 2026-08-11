@@ -53,6 +53,7 @@ import com.example.applemaps.map.ConsumerSelectedPlace
 import com.example.applemaps.map.MapCoordinate
 import com.example.applemaps.map.Place
 import com.example.applemaps.map.PlaceRepository
+import com.example.applemaps.map.AppleBrowseClient
 import com.example.applemaps.map.RouteLayer
 import com.example.applemaps.map.RouteRepository
 import com.example.applemaps.ui.anim.AppleEasing
@@ -80,6 +81,8 @@ import kotlinx.coroutines.launch
  * Route stops are intentionally excluded because they use route-bound camera framing instead of the pin flow.
  * Directions and active guidance stay on that same consumer WebView: the blue route trims behind the navigation
  * arrow, heading follow pauses on a real map gesture, and the searchable "+ Add Stop" row appends a via waypoint.
+ * Find Nearby and editorial Guide taps retrieve Apple Web data in the background and render it in a native tray;
+ * their corresponding hidden consumer page keeps Apple's native result markers on the map.
  * Phone rendering for this consumer-guidance revision remains device-unverified until its APK is exercised.
  */
 /** Preserves the former 0.16-per-60Hz-frame follow curve at every display refresh rate. */
@@ -175,6 +178,9 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var navTotalDist by remember { mutableStateOf<Double?>(null) }    // route total (m) captured at start -> progress
     var navProgress by remember { mutableStateOf(0f) }
     var searchActive by remember { mutableStateOf(false) }            // full-screen search overlay open
+    var browseState by remember { mutableStateOf<AppleBrowseState?>(null) }
+    var browseRequestId by remember { mutableStateOf(0) }
+    val browseSheet = remember { AppleSheetController() }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<Place>>(emptyList()) }
     var editingStopIndex by remember { mutableStateOf<Int?>(null) }   // existing index replaces; stops.size appends
@@ -309,6 +315,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
 
     fun handleConsumerSelection(selection: ConsumerSelectedPlace) {
         if (navMode) return
+        browseState = null
+        browseRequestId++
         if (selection.source == "app-marker") {
             val retained = place ?: lastPlace
             if (retained != null) {
@@ -365,8 +373,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             pinTint = pinTint,
             pinFace = pinFace,
             pinLabel = pinLabel,
-            baseSheetVisible = place == null && !navMode,   // the place card fully covers it; Back brings it back
-            chromeVisible = !navMode,                       // hide map-type/locate buttons + legal links in nav
+            baseSheetVisible = place == null && !navMode && browseState == null,
+            chromeVisible = !navMode,
             buildings3DEnabled = buildings3D || navMode,    // user preference; navigation intentionally forces 3D on
             locationEnabled = locationGranted && !navMode,  // hide the blue location dot in nav (the arrow puck replaces it)
             onPlaceSelected = ::handleConsumerSelection,
@@ -393,6 +401,47 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 mapController.centerOn(location ?: MapCoordinate(37.7749, -122.4194), zoom = if (location != null) 15.0 else 14.0)
             },
             onSearch = { searchActive = true },
+            onCategory = { label ->
+                if (mapController.showHomeCategory(label)) {
+                    val requestId = ++browseRequestId
+                    browseState = AppleBrowseState.Loading(label)
+                    scope.launch {
+                        val center = mapController.center()
+                        val result = try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                AppleBrowseClient.category(label, center.latitude, center.longitude)
+                            }
+                        } catch (error: kotlinx.coroutines.CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            DiagLog.log("APPLEBROWSE", "event=category_failed", "type=${error.javaClass.simpleName}")
+                            null
+                        }
+                        if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Category)
+                            ?: AppleBrowseState.Error(label, "Apple Maps did not return nearby places.")
+                    }
+                }
+            },
+            onGuide = { curatedId ->
+                if (mapController.showGuide(curatedId)) {
+                    val requestId = ++browseRequestId
+                    browseState = AppleBrowseState.Loading("Guide")
+                    scope.launch {
+                        val result = try {
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                AppleBrowseClient.guide(curatedId)
+                            }
+                        } catch (error: kotlinx.coroutines.CancellationException) {
+                            throw error
+                        } catch (error: Exception) {
+                            DiagLog.log("APPLEBROWSE", "event=guide_failed", "type=${error.javaClass.simpleName}")
+                            null
+                        }
+                        if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Guide)
+                            ?: AppleBrowseState.Error("Guide", "Apple Maps did not return this Guide.")
+                    }
+                }
+            },
         )
 
         // lookAroundMapEntry — imagery uses Apple's lower-left photo thumbnail; absent coverage uses the
@@ -598,8 +647,44 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 )
             }
         }
-        BackHandler(enabled = place != null || directionsRoutes != null || navMode) {
+        val closeBrowse = {
+            browseRequestId++
+            browseState = null
+        }
+        androidx.compose.animation.AnimatedVisibility(
+            visible = browseState != null && place == null && !navMode,
+            enter = slideInVertically(tween(420, easing = AppleEasing.ExpoOut)) { it },
+            exit = slideOutVertically(tween(420, easing = AppleEasing.ExpoOut)) { it },
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            browseState?.let { state ->
+                AppleBottomSheet(
+                    peekHeight = 82.dp,
+                    topRadius = 14.dp,
+                    controller = browseSheet,
+                    initialDetent = 1,
+                    header = { AppleBrowseHeader(state, closeBrowse) },
+                    body = {
+                        AppleBrowseBody(state) { result ->
+                            handleConsumerSelection(
+                                ConsumerSelectedPlace(
+                                    id = result.id,
+                                    title = result.place.name,
+                                    category = result.place.category,
+                                    coordinate = MapCoordinate(result.place.lat, result.place.lon),
+                                    source = "apple-browse",
+                                ),
+                            )
+                        }
+                    },
+                )
+            }
+        }
+        LaunchedEffect(browseState != null) { if (browseState != null) browseSheet.goTo(1) }
+
+        BackHandler(enabled = browseState != null || place != null || directionsRoutes != null || navMode) {
             when {
+                browseState != null -> closeBrowse()
                 navMode -> {   // leave turn-by-turn: flatten the map back to the overview, restore the planner
                     navMode = false
                     mapController.clearNavigation()
