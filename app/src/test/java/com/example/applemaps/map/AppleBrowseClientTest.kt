@@ -31,6 +31,35 @@ class AppleBrowseClientTest {
         assertNull(AppleBrowseClient.parseCategoryResponse("Parks", raw))
     }
 
+    @Test fun homeParserKeepsAppleCategoryAndGuideOrder() {
+        val raw = """
+          {"status":"STATUS_SUCCESS","globalResult":{"mapsSearchHomeResult":{"mapsSearchHomeSection":[
+            {"name":"Near Me","searchBrowseCategorySuggestionResult":{"category":[
+              {"shortDisplayString":"Coffee","displayString":"Coffee Shops","popularDisplayToken":"Coffee Shops"},
+              {"shortDisplayString":"Parking","displayString":"Parking","popularDisplayToken":"Parking"}
+            ]}},
+            {"name":"Current Guides","collectionSuggestionResult":{"collectionId":[
+              {"shardedId":{"muid":"22"}},{"shardedId":{"muid":"11"}}
+            ]}}
+          ]}}}
+        """.trimIndent()
+        val result = AppleBrowseClient.parseHomeResponse(raw)
+        assertEquals("Near Me", result?.categoryTitle)
+        assertEquals(listOf("Coffee", "Parking"), result?.categories?.map { it.label })
+        assertEquals(listOf("Coffee Shops", "Parking"), result?.categories?.map { it.query })
+        assertEquals("Current Guides", result?.guideTitle)
+        assertEquals(listOf("22", "11"), result?.guideIds)
+    }
+
+    @Test fun homeParserRejectsMissingGuideSection() {
+        val raw = """{"status":"STATUS_SUCCESS","globalResult":{"mapsSearchHomeResult":{"mapsSearchHomeSection":[
+          {"name":"Near Me","searchBrowseCategorySuggestionResult":{"category":[
+            {"shortDisplayString":"Coffee","popularDisplayToken":"Coffee Shops"}
+          ]}}
+        ]}}}"""
+        assertNull(AppleBrowseClient.parseHomeResponse(raw))
+    }
+
     @Test fun guideParserReadsNativeTrayFieldsAndRegularHero() {
         val shell = """
           {"initialState":{"placeCache":{"77":{

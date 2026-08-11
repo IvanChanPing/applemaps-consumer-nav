@@ -1,5 +1,16 @@
 # Changelog
 
+- 2026-08-11 — Replaced the static home categories, Guide titles, and solid-color Guide placeholders with Apple's
+  latest region-scoped `/data/search-home` feed for versionCode 7 / versionName `0.8-live-home-feed`. The app waits
+  for Apple's real camera center, debounces region changes, invalidates older requests immediately, resolves the
+  newest ordered Guide IDs concurrently, and renders their current publisher/title/hero image. Each completed feed
+  refresh bypasses prior Coil memory/disk image entries, while request generations prevent an older response from
+  replacing the newest region. Search is unchanged. Files: `AppleBrowseClient.kt`, `ConsumerMapController.kt`,
+  `AppleMapsScreen.kt`, `GeneratedLayout.kt`, `HomeFrontPage.kt`, parser tests, version metadata, and README. All 37
+  JVM tests, Android lint, and debug assembly pass. The canonical, served, and HTTPS-downloaded APKs are byte-identical
+  with SHA-256 `1fcbdcc53bf1800496347a3a13bb41f1a207f1f4af1192e8ed466ea55e22c59c`; the APK remains untracked so the
+  security-audited GitHub history stays free of committed binaries.
+
 - 2026-08-11 — Mapped the home sheet's non-search content to the consumer Apple Maps web app for versionCode 6 /
   versionName `0.7-web-home-actions`. Find Nearby uses Apple's live `/data/search` contract and the static
   editorial samples were replaced with three verified Apple curated Guides parsed from server-rendered Guide caches.

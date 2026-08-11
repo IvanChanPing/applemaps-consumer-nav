@@ -21,6 +21,8 @@ import com.example.applemaps.map.MapSurface
 import com.example.applemaps.map.ConsumerMapController
 import com.example.applemaps.map.ConsumerSelectedPlace
 import com.example.applemaps.map.MapCoordinate
+import com.example.applemaps.map.AppleHomeCategory
+import com.example.applemaps.map.AppleHomeContent
 import com.example.applemaps.ui.components.*
 
 @Composable
@@ -44,7 +46,10 @@ fun GeneratedAppleLayout(
     onLocate: () -> Unit = {},
     locationEnabled: Boolean = false,
     onSearch: () -> Unit = {},
-    onCategory: (String) -> Unit = {},
+    homeContent: AppleHomeContent? = null,
+    homeLoading: Boolean = true,
+    homeError: String? = null,
+    onCategory: (AppleHomeCategory) -> Unit = {},
     onGuide: (String) -> Unit = {},
     collapsedPeek: androidx.compose.ui.unit.Dp? = null,   // place-card state uses a shorter peek (name only)
 ) {
@@ -89,7 +94,7 @@ fun GeneratedAppleLayout(
                     )
                 }
             },
-            body = { if (placeBody != null) placeBody() else HomeFrontPage(onCategory = onCategory, onGuide = onGuide) },
+            body = { if (placeBody != null) placeBody() else HomeFrontPage(homeContent, homeLoading, homeError, onCategory, onGuide) },
         )
         }
     }

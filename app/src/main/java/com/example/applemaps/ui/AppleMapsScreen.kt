@@ -54,6 +54,8 @@ import com.example.applemaps.map.MapCoordinate
 import com.example.applemaps.map.Place
 import com.example.applemaps.map.PlaceRepository
 import com.example.applemaps.map.AppleBrowseClient
+import com.example.applemaps.map.AppleHomeContent
+import com.example.applemaps.map.ConsumerRendererState
 import com.example.applemaps.map.RouteLayer
 import com.example.applemaps.map.RouteRepository
 import com.example.applemaps.ui.anim.AppleEasing
@@ -181,6 +183,37 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var browseState by remember { mutableStateOf<AppleBrowseState?>(null) }
     var browseRequestId by remember { mutableStateOf(0) }
     val browseSheet = remember { AppleSheetController() }
+    var homeContent by remember { mutableStateOf<AppleHomeContent?>(null) }
+    var homeLoading by remember { mutableStateOf(true) }
+    var homeError by remember { mutableStateOf<String?>(null) }
+    var homeRequestId by remember { mutableStateOf(0) }
+    val rendererState by mapController.state
+    val homeCenter by mapController.centerState
+    val homeRegionKey = homeCenter?.let { (it.latitude * 50).roundToInt() to (it.longitude * 50).roundToInt() }
+    val homeVisible = place == null && !navMode && browseState == null
+    LaunchedEffect(rendererState, homeRegionKey, homeVisible) {
+        val center = homeCenter
+        if (rendererState !is ConsumerRendererState.Ready || center == null || !homeVisible) return@LaunchedEffect
+        val requestId = ++homeRequestId
+        homeLoading = true
+        kotlinx.coroutines.delay(400)
+        val result = try {
+            AppleBrowseClient.home(center.latitude, center.longitude)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            null
+        }
+        if (requestId == homeRequestId) {
+            homeLoading = false
+            if (result != null) {
+                homeContent = result
+                homeError = null
+            } else {
+                homeError = "Apple Maps home couldn't refresh."
+            }
+        }
+    }
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<Place>>(emptyList()) }
     var editingStopIndex by remember { mutableStateOf<Int?>(null) }   // existing index replaces; stops.size appends
@@ -401,15 +434,18 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 mapController.centerOn(location ?: MapCoordinate(37.7749, -122.4194), zoom = if (location != null) 15.0 else 14.0)
             },
             onSearch = { searchActive = true },
-            onCategory = { label ->
-                if (mapController.showHomeCategory(label)) {
+            homeContent = homeContent,
+            homeLoading = homeLoading,
+            homeError = homeError,
+            onCategory = { category ->
+                if (mapController.showHomeCategory(category.query)) {
                     val requestId = ++browseRequestId
-                    browseState = AppleBrowseState.Loading(label)
+                    browseState = AppleBrowseState.Loading(category.label)
                     scope.launch {
                         val center = mapController.center()
                         val result = try {
                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                AppleBrowseClient.category(label, center.latitude, center.longitude)
+                                AppleBrowseClient.category(category.query, center.latitude, center.longitude)
                             }
                         } catch (error: kotlinx.coroutines.CancellationException) {
                             throw error
@@ -418,7 +454,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                             null
                         }
                         if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Category)
-                            ?: AppleBrowseState.Error(label, "Apple Maps did not return nearby places.")
+                            ?: AppleBrowseState.Error(category.label, "Apple Maps did not return nearby places.")
                     }
                 }
             },

@@ -70,6 +70,8 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     private val main = Handler(Looper.getMainLooper())
     private val rendererState = mutableStateOf<ConsumerRendererState>(ConsumerRendererState.Loading)
     val state: State<ConsumerRendererState> get() = rendererState
+    private val cameraCenterState = mutableStateOf<MapCoordinate?>(null)
+    val centerState: State<MapCoordinate?> get() = cameraCenterState
     private val locationManager = context.getSystemService(LocationManager::class.java)
     private var container: FrameLayout? = null
     private var webView: WebView? = null
@@ -475,7 +477,11 @@ class ConsumerMapController(private val context: Context) : LocationListener {
             }
             val lat = p.optDouble("latitude", Double.NaN)
             val lon = p.optDouble("longitude", Double.NaN)
-            if (lat.isFinite() && lon.isFinite()) currentCenter = MapCoordinate(lat, lon)
+            if (lat.isFinite() && lon.isFinite()) {
+                val center = MapCoordinate(lat, lon)
+                currentCenter = center
+                cameraCenterState.value = center
+            }
         }
 
         @JavascriptInterface fun onError(title: String, detail: String) = main.post {
