@@ -11,19 +11,19 @@ Apple session, vector/WebGL rendering, and browser cache; this project does not 
 The Android bridge controls only the live consumer map instance exposed by that page:
 
 - Standard, Satellite, and Hybrid map types
-- Apple place selection and native sheet handoff
-- app-owned animated selected marker
+- Apple place selection with Apple's native selected annotation and native sheet handoff
+- native Apple markers for app-origin search and long-press selections
 - current-location dot
 - route alternatives, traffic-colored route segments, reveal, and iOS-style route-bounds framing
+- turn-by-turn route progress, heading follow, pan/zoom pause, and always-visible compass after GO
 
-The green GO action crossfades out of the Apple route-preview presentation and into the preserved custom navigation
-renderer. That navigation-only MapLibre surface uses a local Apple-colored style restricted to OpenFreeMap sources
-(no Mapbox source or token), the existing arrow artwork and Ferrostar state, the vanishing traveled-route line,
-heading-up 58-degree follow camera, pause-on-user-gesture behavior, and MapLibre's native always-visible compass.
-Tapping the compass uses the SDK's built-in north reset. Exit crossfades back to the still-mounted Apple session.
+The green GO action keeps that same Apple consumer renderer mounted beneath the Ferrostar navigation overlay. Route
+progress trims the traveled line, the existing navigation arrow follows the current snapped location and heading,
+a real map gesture pauses camera following, Recenter resumes it, and Exit restores the route planner. The app does
+not switch to a MapLibre/Mapbox basemap during navigation.
 
-Provider categories are normalized before selecting the custom marker artwork, including Convenience Store,
-Grocery, Supermarket, and generic Store/Shop categories; only genuinely unknown classes use the gray fallback.
+The Directions card's blue **+ Add Stop** row opens the existing place search. Selecting a result appends a via stop;
+selecting an existing stop row uses the same search to replace it.
 
 Directions/place providers remain the copied app's existing providers. Google's Road Level Details map remains a
 separate optional screen and is not the basemap renderer.

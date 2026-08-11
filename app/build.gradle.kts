@@ -15,8 +15,8 @@ android {
         applicationId = "com.example.applemaps.consumernav"
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.4-navigation-fixes"
+        versionCode = 4
+        versionName = "0.5-webview-navigation-fixes"
         // On-device Google Routes API key (route planning). Supply via `-PROUTES_API_KEY=...` or gradle.properties.
         buildConfigField("String", "ROUTES_API_KEY", "\"${project.findProperty("ROUTES_API_KEY") ?: ""}\"")
         // Google Places API key (place details + photos). Falls back to ROUTES_API_KEY so one key with both APIs enabled works.
@@ -76,11 +76,7 @@ dependencies {
     // Boxless rich place cards: Android-restricted Places API (New) calls run directly in the APK.
     implementation("com.google.android.libraries.places:places:5.3.0")
 
-    // Browsing and route preview remain on the consumer Apple renderer. The preserved custom renderer is
-    // mounted only after GO, where native route/puck camera updates and a north-reset compass are required.
-    implementation("org.maplibre.gl:android-sdk:13.3.1")
-
-    // Ferrostar provides keyless turn-by-turn state/TTS; the consumer Apple renderer remains app-owned.
+    // Ferrostar provides keyless turn-by-turn state/TTS; the consumer Apple WebView remains map owner through GO.
     val ferrostar = "0.53.0"
     implementation("com.stadiamaps.ferrostar:core:$ferrostar")
     implementation("com.stadiamaps.ferrostar:ui-compose:$ferrostar")

@@ -55,9 +55,6 @@ import com.example.applemaps.map.MapCoordinate
 import com.example.applemaps.map.Place
 import com.example.applemaps.map.PlaceRepository
 import com.example.applemaps.map.RouteLayer
-import com.example.applemaps.map.NavigationArrowLayer
-import com.example.applemaps.map.NavigationMapSurface
-import com.example.applemaps.map.NavigationRouteLayer
 import com.example.applemaps.map.RouteRepository
 import com.example.applemaps.ui.anim.AppleEasing
 import com.example.applemaps.ui.components.AppleBottomSheet
@@ -82,16 +79,10 @@ import kotlinx.coroutines.launch
  * a standalone 44dp entry control whose preview explains availability before fullscreen.
  * Place-photo taps expand from the measured thumbnail bounds into the fullscreen gallery.
  * Route stops are intentionally excluded because they use route-bound camera framing instead of the pin flow.
+ * Directions and active guidance stay on that same consumer WebView: the blue route trims behind the navigation
+ * arrow, heading follow pauses on a real map gesture, and the searchable "+ Add Stop" row appends a via waypoint.
+ * Phone rendering for this consumer-guidance revision remains device-unverified until its APK is exercised.
  */
-// Compass bearing (degrees) from a to b — used to orient the driving-view camera down the route.
-private fun bearingBetween(a: MapCoordinate, b: MapCoordinate): Double {
-    val dLon = Math.toRadians(b.longitude - a.longitude)
-    val y = Math.sin(dLon) * Math.cos(Math.toRadians(b.latitude))
-    val x = Math.cos(Math.toRadians(a.latitude)) * Math.sin(Math.toRadians(b.latitude)) -
-        Math.sin(Math.toRadians(a.latitude)) * Math.cos(Math.toRadians(b.latitude)) * Math.cos(dLon)
-    return (Math.toDegrees(Math.atan2(y, x)) + 360) % 360
-}
-
 /** Preserves the former 0.16-per-60Hz-frame follow curve at every display refresh rate. */
 internal fun navFollowFraction(deltaSeconds: Double): Double =
     1.0 - (1.0 - 0.16).pow(deltaSeconds.coerceIn(0.0, 0.1) * 60.0)
@@ -104,6 +95,21 @@ internal fun consumerMapType(mapType: String): String = when (mapType) {
 }
 
 internal fun transitEnabledForMapType(mapType: String): Boolean = mapType == "Transit"
+
+/** Returns the Add Stop search result applied at an existing row or appended at the list-end sentinel. */
+internal fun updatedRouteStops(
+    stops: List<MapCoordinate>,
+    index: Int,
+    coordinate: MapCoordinate,
+): List<MapCoordinate>? = when {
+    index in stops.indices -> stops.toMutableList().also { it[index] = coordinate }
+    index == stops.size -> stops + coordinate
+    else -> null
+}
+
+/** Rejects sheet-controller sentinels so a reopening sheet can never block the whole map touch surface. */
+internal fun validMapSheetHeight(value: Float, screenHeight: Float): Float =
+    value.takeIf { it.isFinite() && screenHeight.isFinite() && screenHeight > 0f && it in 0f..screenHeight } ?: 0f
 
 // ETA bubble text for each route (time + descriptor), in the order the routes are drawn (index 0 = selected).
 private fun routeLabels(routes: List<com.example.applemaps.map.Route>): List<Pair<String, String>> = routes.mapIndexed { i, r ->
@@ -148,9 +154,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var lastDir by remember { mutableStateOf<List<com.example.applemaps.map.Route>?>(null) }   // retained so the directions sheet keeps its content while sliding out
     var selectedRoute by remember { mutableStateOf(0) }
     var dirMode by remember { mutableStateOf("Drive") }
-    var navMode by remember { mutableStateOf(false) }   // turn-by-turn: crossfade to the custom driving renderer
+    var navMode by remember { mutableStateOf(false) }   // turn-by-turn: consumer WebView route + native overlay
     val stops = remember { mutableStateOf<List<MapCoordinate>>(emptyList()) }   // via-waypoints added via "Add Stop"
-    val addingStop = remember { mutableStateOf(false) }                  // armed by "Add Stop" → next long-press adds a via
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val navEngine = remember { com.example.applemaps.nav.NavEngine(context) }   // Ferrostar TBT core (Option A)
@@ -174,11 +179,10 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var navTgtBrg by remember { mutableStateOf(0.0) }                 // latest heading target
     var navTotalDist by remember { mutableStateOf<Double?>(null) }    // route total (m) captured at start -> progress
     var navProgress by remember { mutableStateOf(0f) }
-    var navigationMap by remember { mutableStateOf<org.maplibre.android.maps.MapLibreMap?>(null) }
     var searchActive by remember { mutableStateOf(false) }            // full-screen search overlay open
     var searchQuery by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<Place>>(emptyList()) }
-    var editingStopIndex by remember { mutableStateOf<Int?>(null) }   // non-null -> Search REPLACES this stop
+    var editingStopIndex by remember { mutableStateOf<Int?>(null) }   // existing index replaces; stops.size appends
     LaunchedEffect(searchQuery) {                                     // debounced keyless forward-geocode (Nominatim)
         if (searchQuery.isBlank()) { searchResults = emptyList(); return@LaunchedEffect }
         kotlinx.coroutines.delay(280)
@@ -260,7 +264,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         place != null -> placeSheet.offsetPx
         else -> sheetController.offsetPx
     }
-    val mapInputBottomInsetPx = (activeSheetHeightPx + WindowInsets.navigationBars.getBottom(density))
+    val mapInputBottomInsetPx = (validMapSheetHeight(activeSheetHeightPx, deviceScreenHeightPx) +
+        WindowInsets.navigationBars.getBottom(density))
         .coerceIn(0f, deviceScreenHeightPx)
     SideEffect { mapController.setInputBottomInsetPx(mapInputBottomInsetPx) }
 
@@ -270,7 +275,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     //    icon shows again ("back to the icon") — collapsing a POI to a circular dot was the wrong behavior.
     fun dismissCard() {
         selectionGeneration++
-        place = null; isStation = false; placeLoading = false; directionsRoutes = null; directionsError = null; stops.value = emptyList(); addingStop.value = false
+        place = null; isStation = false; placeLoading = false; directionsRoutes = null; directionsError = null; stops.value = emptyList()
         if (!pinIsDropped) { pin = null; pinFace = null; pinLabel = "Marked Location"; minimized = false } else { minimized = true }
         RouteLayer.clear(mapController)
     }
@@ -308,7 +313,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 if (!routes.isNullOrEmpty()) {
                     directionsRoutes = routes; selectedRoute = 0
                     // bottom padding ≈ mid-detent sheet height so the origin is framed above the sheet, not behind it
-                    RouteLayer.drawRoutes(mapController, routes, bottomPadPx = with(density) { 360.dp.roundToPx() },
+                    RouteLayer.drawRoutes(mapController, routes, bottomPadPx = with(density) { 180.dp.roundToPx() },
                         labels = routeLabels(routes), density = density.density)
                     DiagLog.log("DIRECTIONS", "event=routes_ready", "request=$requestId", "count=${routes.size}", "stops=${stops.value.size}")
                 } else {
@@ -334,13 +339,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 recenterOnPin(selection.coordinate)
                 return
             }
-        }
-        if (addingStop.value) {
-            stops.value = stops.value + selection.coordinate
-            addingStop.value = false
-            directionsSheet.goTo(1)
-            recomputeDirections()
-            return
         }
         selectionGeneration++
         val requestGeneration = selectionGeneration
@@ -396,21 +394,17 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
 
             onMapLongClick = onLong@{ ll ->
                 if (navMode) return@onLong   // no dropping pins while navigating
-                if (addingStop.value) {   // "Add Stop" armed → this long-press becomes a via-waypoint, then reroute
-                    stops.value = stops.value + ll; addingStop.value = false; directionsSheet.goTo(1); recomputeDirections()
-                } else {
-                    selectionGeneration++
-                    val requestGeneration = selectionGeneration
-                    pinIsDropped = true
-                    pin = ll; minimized = false; isStation = false
-                    pinTint = Color(0xFFFF3B30); pinFace = null; pinLabel = "Marked Location"   // long-press = red Marked Location
-                    place = Place("Marked Location", "Location", "", "", ll.latitude, ll.longitude)
-                    placeLoading = true
-                    recenterOnPin(ll)
-                    scope.launch {
-                        val resolved = PlaceRepository.reverseGeocode(ll.latitude, ll.longitude)
-                        if (selectionGeneration == requestGeneration) { place = resolved; placeLoading = false }
-                    }
+                selectionGeneration++
+                val requestGeneration = selectionGeneration
+                pinIsDropped = true
+                pin = ll; minimized = false; isStation = false
+                pinTint = Color(0xFFFF3B30); pinFace = null; pinLabel = "Marked Location"   // long-press = red Marked Location
+                place = Place("Marked Location", "Location", "", "", ll.latitude, ll.longitude)
+                placeLoading = true
+                recenterOnPin(ll)
+                scope.launch {
+                    val resolved = PlaceRepository.reverseGeocode(ll.latitude, ll.longitude)
+                    if (selectionGeneration == requestGeneration) { place = resolved; placeLoading = false }
                 }
             },
             onMapType = { if (showPicker) { showPicker = false; sheetController.goTo(0) } else { showPicker = true; sheetController.goTo(1) } },
@@ -420,38 +414,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             },
             onSearch = { searchActive = true },
         )
-
-        val activeNavigationRoute = directionsRoutes
-            ?.getOrNull(selectedRoute)
-            ?.takeIf { it.points.size >= 2 }
-        AnimatedVisibility(
-            visible = navMode && activeNavigationRoute != null,
-            enter = androidx.compose.animation.fadeIn(tween(320, easing = AppleEasing.Standard)),
-            exit = androidx.compose.animation.fadeOut(tween(260, easing = AppleEasing.EaseIn)),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            activeNavigationRoute?.let { route ->
-                NavigationMapSurface(
-                    modifier = Modifier.fillMaxSize(),
-                    onMapGesture = { navFollowing = false },
-                    onMapReady = { readyMap ->
-                        navigationMap = readyMap
-                        if (readyMap != null) {
-                            NavigationRouteLayer.draw(readyMap, route)
-                            NavigationRouteLayer.setProgress(readyMap, navProgress)
-                            val start = route.points.first()
-                            val bearing = bearingBetween(start, route.points[1])
-                            NavigationArrowLayer.update(readyMap, context, start, bearing)
-                            readyMap.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(
-                                org.maplibre.android.camera.CameraPosition.Builder()
-                                    .target(org.maplibre.android.geometry.LatLng(start.latitude, start.longitude))
-                                    .zoom(18.0).tilt(58.0).bearing(bearing).build(),
-                            ))
-                        }
-                    },
-                )
-            }
-        }
 
         // lookAroundMapEntry — imagery uses Apple's lower-left photo thumbnail; absent coverage uses the
         // standalone 44dp binocular control. Both stay wholly on the map, 10dp above the active sheet.
@@ -536,9 +498,9 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     labels = routeLabels(ordered), density = density.density)
             }
         }
-        val exitDirections: () -> Unit = { directionsRoutes = null; directionsError = null; stops.value = emptyList(); addingStop.value = false; RouteLayer.clear(mapController) }
-        // GO crossfades from consumer Apple route preview to the preserved custom navigation renderer. Both sheets
-        // hide via their `&& !navMode` gates while the navigation renderer owns route/puck camera updates.
+        val exitDirections: () -> Unit = { directionsRoutes = null; directionsError = null; stops.value = emptyList(); RouteLayer.clear(mapController) }
+        // GO keeps the consumer Apple route alive. The native sheets hide while the same WebView receives progress,
+        // navigation-arrow, heading-follow, gesture-pause, recenter, and compass updates beneath NavOverlay.
         val startNav: () -> Unit = {
             val rs = directionsRoutes
             if (rs != null && rs.isNotEmpty()) {
@@ -551,6 +513,9 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                             .onFailure { DiagLog.log("DIRECTIONS", "event=nav_start_error", "type=${it.javaClass.simpleName}") }
                             .getOrDefault(false)
                         if (started) {
+                            val ordered = listOf(rs[selectedIndex]) + rs.filterIndexed { i, _ -> i != selectedIndex }
+                            RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false,
+                                labels = routeLabels(ordered), density = density.density)
                             navMode = true
                             navFollowing = true   // each nav session starts following the puck
                             navProgress = 0f
@@ -642,7 +607,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                         if (dr != null) DirectionsBody(cardPlace, dr, selectedRoute, dirMode,
                             onMode = { dirMode = it; recomputeDirections() }, onSelect = selectRoute, onGo = startNav,
                             stopCount = stops.value.size, routeError = directionsError,
-                            onAddStop = { addingStop.value = true; directionsSheet.goTo(0) },
+                            // addStopRow — blue "+ Add Stop" row in the iOS-style From/To card; opens search and appends.
+                            onAddStop = { editingStopIndex = stops.value.size; searchActive = true },
                             onRemoveStop = { i -> stops.value = stops.value.toMutableList().also { if (i in it.indices) it.removeAt(i) }; recomputeDirections() },
                             onEditStop = { i -> editingStopIndex = i; searchActive = true },
                             onReorderStop = { from, to -> stops.value = stops.value.toMutableList().also { if (from in it.indices) { val s = it.removeAt(from); it.add(to.coerceIn(0, it.size), s) } }; recomputeDirections() },
@@ -695,8 +661,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         BackHandler(enabled = gallery != null) { gallery = null }
         BackHandler(enabled = lookPreviewOpen && !lookOpen) { closeLookPreview() }
         BackHandler(enabled = infoRoute != null) { infoRoute = null }
-        BackHandler(enabled = addingStop.value) { addingStop.value = false; directionsSheet.goTo(1) }
-
         // "Choose Map" modal. Transition (traced feel): opening moved the base card to its MID detent (above);
         // the picker then rises up from the bottom edge to cover the map; closing reverses both. Scrim fades.
         val closePicker = { showPicker = false; sheetController.goTo(0) }
@@ -763,17 +727,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         LaunchedEffect(trafficEnabled) { mapController.setTrafficEnabled(trafficEnabled) }
         LaunchedEffect(mapType) { mapController.setMapType(consumerMapType(mapType)) }
 
-        // "Add Stop" armed — a clear hint so the user knows to tap the map (fades in/out, no pop).
-        AnimatedVisibility(visible = addingStop.value, modifier = Modifier.align(Alignment.TopCenter),
-            enter = androidx.compose.animation.fadeIn(tween(200)), exit = androidx.compose.animation.fadeOut(tween(200))) {
-            androidx.compose.material3.Text(
-                "Tap a place or long-press the map to add a stop",
-                color = Color.White,
-                modifier = Modifier.statusBarsPadding().padding(top = 12.dp)
-                    .background(Color(0xE6007AFF), RoundedCornerShape(10.dp)).padding(horizontal = 16.dp, vertical = 10.dp),
-            )
-        }
-
         // Route (i) details page — a SLIDE-UP bottom sheet (scrim fades, panel rises) listing the maneuvers.
         // infoShown caches the last route so the panel still renders during the slide-DOWN exit (infoRoute=null).
         val infoShown = remember { mutableStateOf<Pair<com.example.applemaps.map.Route, Int>?>(null) }
@@ -818,14 +771,14 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     if (navTotalDist == null || remain > navTotalDist!!) navTotalDist = remain
                     val t = (1.0 - remain / (navTotalDist ?: remain)).coerceIn(0.0, 1.0)
                     navProgress = t.toFloat()
-                    navigationMap?.let { NavigationRouteLayer.setProgress(it, navProgress) }
+                    RouteLayer.setProgress(mapController, navProgress)
                 }
             }
         }
 
         // TURN-BY-TURN SMOOTH follow: ease the camera + arrow toward each new target at display rate. The elapsed-
         // time fraction preserves the old 60Hz curve on high-refresh screens. Once the pose converges, duplicate
-        // custom-renderer route/puck/camera mutations pause until the target or follow mode changes.
+        // consumer-renderer route/puck/camera mutations pause until the target or follow mode changes.
         LaunchedEffect(navMode) {
             if (!navMode) return@LaunchedEffect
             var initialized = false
@@ -862,17 +815,9 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 val poseChanged = dispLat != renderedLat || dispLon != renderedLon ||
                     dispBrg != renderedBrg
                 val followChanged = navFollowing != wasFollowing
-                val map = navigationMap
-                if (map != null && (poseChanged || (navFollowing && followChanged))) {
+                if (poseChanged || (navFollowing && followChanged)) {
                     val coordinate = MapCoordinate(dispLat, dispLon)
-                    NavigationArrowLayer.update(map, context, coordinate, dispBrg)
-                    if (navFollowing) {
-                        map.moveCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(
-                            org.maplibre.android.camera.CameraPosition.Builder()
-                                .target(org.maplibre.android.geometry.LatLng(dispLat, dispLon))
-                                .zoom(18.0).tilt(58.0).bearing(dispBrg).build(),
-                        ))
-                    }
+                    mapController.setNavigationPose(coordinate, dispBrg, navFollowing)
                     renderedLat = dispLat
                     renderedLon = dispLon
                     renderedBrg = dispBrg
@@ -884,7 +829,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         // Full turn-by-turn overlay (built from the Google Immersive reference): banner + FABs + Exit bar.
         // Replaces the normal sheet + map chrome while navigating.
         // While navigating, a USER map gesture (pan/zoom/rotate) pauses auto-follow so you can look around; the
-        // recenter FAB resumes it. The custom renderer reports only real user camera gestures.
+        // recenter FAB resumes it. The consumer renderer reports only real user map gestures.
 
         AnimatedVisibility(visible = navMode, modifier = Modifier.fillMaxSize(),
             enter = androidx.compose.animation.fadeIn(tween(320)), exit = androidx.compose.animation.fadeOut(tween(260))) {
@@ -900,11 +845,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 onRecenter = {
                     navFollowing = true   // resume auto-follow after the user panned away
                     navEngine.snappedLocation?.let { location ->
-                        navigationMap?.animateCamera(org.maplibre.android.camera.CameraUpdateFactory.newCameraPosition(
-                            org.maplibre.android.camera.CameraPosition.Builder()
-                                .target(org.maplibre.android.geometry.LatLng(location.latitude, location.longitude))
-                                .zoom(18.0).tilt(58.0).bearing(navEngine.bearing ?: navTgtBrg).build(),
-                        ), 500)
+                        mapController.setNavigationPose(location, navEngine.bearing ?: navTgtBrg, follow = true)
                     }
                 },
                 onExit = {
@@ -925,37 +866,41 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 query = searchQuery,
                 onQueryChange = { searchQuery = it },
                 results = searchResults,
-                onSelect = { p ->
+                onSelect = onSelect@{ p ->
+                    if (!PlaceRepository.isValidMapCoordinate(p.lat, p.lon)) {
+                        DiagLog.log("MAPCAM", "rejectSearch", "name=${p.name}", "lat=${p.lat}", "lon=${p.lon}")
+                        return@onSelect
+                    }
                     searchActive = false; searchQuery = ""
                     val idx = editingStopIndex
-                    if (idx != null) {                              // EDIT-A-STOP: replace stop idx, reroute
+                    if (idx != null) {                              // existing index replaces; list size appends
                         editingStopIndex = null
-                        stops.value = stops.value.toMutableList().also { if (idx in it.indices) it[idx] = MapCoordinate(p.lat, p.lon) }
-                        recomputeDirections()
+                        val updated = updatedRouteStops(stops.value, idx, MapCoordinate(p.lat, p.lon))
+                        if (updated != null) {
+                            stops.value = updated
+                            directionsSheet.goTo(1)
+                            recomputeDirections()
+                        } else DiagLog.log("DIRECTIONS", "event=invalid_stop_index", "index=$idx", "size=${stops.value.size}")
                     } else {                                        // normal: drop pin + open its place card
-                        if (!PlaceRepository.isValidMapCoordinate(p.lat, p.lon)) {
-                            DiagLog.log("MAPCAM", "rejectSearch", "name=${p.name}", "lat=${p.lat}", "lon=${p.lon}")
-                        } else {
-                            selectionGeneration++
-                            val requestGeneration = selectionGeneration
-                            val ll = MapCoordinate(p.lat, p.lon)
-                            pinIsDropped = false
-                            pin = ll; minimized = false; isStation = false
-                            applyCategoryPin(p.category); pinLabel = p.name
-                            place = p; placeLoading = true
-                            recenterOnPin(ll, 16.0)
-                            scope.launch {
-                                val real = PlaceRepository.fetchApplePlace(p.name, p.lat, p.lon)
-                                    ?: PlaceRepository.fetchGooglePlace(p.name, p.lat, p.lon)
-                                if (selectionGeneration == requestGeneration) {
-                                    // Preserve the marker chosen from the search result; richer provider
-                                    // category text belongs to the card and is not a replacement icon class.
-                                    if (real != null) place = real
-                                    placeLoading = false
-                                }
+                        selectionGeneration++
+                        val requestGeneration = selectionGeneration
+                        val ll = MapCoordinate(p.lat, p.lon)
+                        pinIsDropped = false
+                        pin = ll; minimized = false; isStation = false
+                        applyCategoryPin(p.category); pinLabel = p.name
+                        place = p; placeLoading = true
+                        recenterOnPin(ll, 16.0)
+                        scope.launch {
+                            val real = PlaceRepository.fetchApplePlace(p.name, p.lat, p.lon)
+                                ?: PlaceRepository.fetchGooglePlace(p.name, p.lat, p.lon)
+                            if (selectionGeneration == requestGeneration) {
+                                // Preserve the marker chosen from the search result; richer provider
+                                // category text belongs to the card and is not a replacement icon class.
+                                if (real != null) place = real
+                                placeLoading = false
                             }
-                            placeSheet.goTo(1)
                         }
+                        placeSheet.goTo(1)
                     }
                 },
                 onClose = { searchActive = false; searchQuery = ""; editingStopIndex = null },

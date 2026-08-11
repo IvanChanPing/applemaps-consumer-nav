@@ -1,5 +1,20 @@
 # Changelog
 
+- 2026-08-11 — Repaired the screenshot-confirmed consumer-map defects for versionCode 4 / versionName
+  `0.5-webview-navigation-fixes`. Apple selections now retain the consumer page's native annotation, while search and
+  long-press selections use native `MarkerAnnotation` instead of the custom gray/brown DOM balloon. Directions uses
+  a real `mapkit.Padding`, reduced sheet clearance, clamped route reveal progress, and a real `DOMPoint`; scrolling,
+  zooming, rotation, and the north compass are explicitly enabled. Invalid sheet-reopening sentinels are rejected
+  before calculating the WebView touch boundary, so they cannot block the entire map. The blue **+ Add Stop** row now opens place search
+  and appends the selected result instead of collapsing the sheet and arming a map tap. GO keeps route progress,
+  arrow, camera follow/pause, and the navigation overlay on the same consumer Apple WebView, removing the separate
+  blank MapLibre renderer and its dependency/style asset. Files: `ConsumerMapController.kt`, `AppleMapsScreen.kt`,
+  `RouteStopSearchTest.kt`, Gradle metadata, README, and removed navigation-renderer files. The full 34-test JVM
+  suite, Android lint, and debug assembly pass; the APK contains no MapLibre library/style payload. Canonical artifact:
+  `applemaps-consumer-nav-debug.apk` (27,771,426 bytes; SHA-256
+  `3fe523af738ee1026de69bfe0e7407ce3140a4bbd3a8aadff90317f358af0b47`). No Android device was attached, so the
+  physical-phone Directions → Add Stop → GO path remains UI-unverified in this build pass.
+
 - 2026-08-11 — Prepared the complete project for its initial private GitHub publication. Local copy-verification
   manifests are excluded because they contain machine-specific absolute paths and are not application inputs; source,
   tests, Gradle wrapper, documentation, and the canonical debug APK remain included.

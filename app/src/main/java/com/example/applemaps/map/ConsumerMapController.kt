@@ -12,7 +12,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.util.Base64
 import android.view.MotionEvent
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
@@ -30,7 +29,6 @@ import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import com.example.applemaps.BuildConfig
@@ -38,7 +36,6 @@ import com.example.applemaps.R
 import com.example.applemaps.diag.DiagLog
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.roundToInt
@@ -65,8 +62,9 @@ data class ConsumerSelectedPlace(
  * The WebView is an Activity-level sibling below the transparent Compose UI. This keeps Apple tile/WebGL
  * state mounted while the copied sheets change. Compose controls receive their own taps; [dispatchTouchEvent]
  * forwards only gestures whose first down lands above the active sheet, then preserves that gesture's complete
- * stream for the WebView. The injected adapter updates every app-owned map node during camera movement and
- * deselects Apple's native annotation after handing selection to the custom animated marker.
+ * stream for the WebView. The injected adapter retains Apple's selected annotation, creates app-origin selections
+ * with MapKit's native marker, keeps scroll/zoom/rotation enabled, and forces the north compass visible. Directions
+ * and turn-by-turn route/arrow/camera state stay on this one renderer instead of switching map engines after GO.
  * The page creates its own consumer session; this class never accepts or logs a developer token.
  */
 class ConsumerMapController(private val context: Context) : LocationListener {
@@ -183,7 +181,7 @@ class ConsumerMapController(private val context: Context) : LocationListener {
         coordinate: MapCoordinate?,
         showBalloon: Boolean,
         tint: Color,
-        face: ImageBitmap?,
+        @Suppress("UNUSED_PARAMETER") face: ImageBitmap?,
         label: String,
     ) {
         desiredPin = coordinate?.let {
@@ -194,7 +192,6 @@ class ConsumerMapController(private val context: Context) : LocationListener {
                 .put("latitude", it.latitude)
                 .put("longitude", it.longitude)
                 .put("color", String.format("#%06X", 0xFFFFFF and tint.toArgb()))
-                .put("face", face?.let(::bitmapDataUrl) ?: "")
                 .put("expanded", showBalloon)
         }
         call("setPin", desiredPin?.toString() ?: "null")
@@ -227,7 +224,7 @@ class ConsumerMapController(private val context: Context) : LocationListener {
             })
         desiredProgress = 0f
         call("setRoutes", desiredRoutes.toString())
-        DiagLog.log("CONSUMERMAP", "event=routes", "count=${routes.size}", "reveal=${if (fitAndReveal) 1 else 0}")
+        DiagLog.log("CONSUMERMAP", "event=routes", "count=${routes.size}", "reveal=${if (fitAndReveal) 1 else 0}", "bottom_css=${bottomPaddingPx.coerceAtLeast(0)}")
     }
 
     fun clearRoutes() {
@@ -460,6 +457,14 @@ class ConsumerMapController(private val context: Context) : LocationListener {
 
         @JavascriptInterface fun onCamera(raw: String) = main.post {
             val p = runCatching { JSONObject(raw.take(512)) }.getOrNull() ?: return@post
+            if (p.optString("event") == "controls") {
+                DiagLog.log(
+                    "CONSUMERMAP", "event=controls",
+                    "scroll=${p.optBoolean("scroll")}", "zoom=${p.optBoolean("zoom")}",
+                    "rotation=${p.optBoolean("rotation")}", "compass=${p.optString("compass").take(40)}",
+                )
+                return@post
+            }
             val lat = p.optDouble("latitude", Double.NaN)
             val lon = p.optDouble("longitude", Double.NaN)
             if (lat.isFinite() && lon.isFinite()) currentCenter = MapCoordinate(lat, lon)
@@ -471,20 +476,16 @@ class ConsumerMapController(private val context: Context) : LocationListener {
         }
     }
 
-    private fun bitmapDataUrl(image: ImageBitmap): String = bitmapDataUrl(image.asAndroidBitmap())
-
-    private fun bitmapDataUrl(bitmap: Bitmap): String = ByteArrayOutputStream().use { output ->
-        bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
-        "data:image/png;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
-    }
-
     private fun drawableDataUrl(@DrawableRes id: Int): String {
         val drawable = ContextCompat.getDrawable(context, id) ?: return ""
         val side = (48 * context.resources.displayMetrics.density).roundToInt().coerceAtLeast(1)
         val bitmap = Bitmap.createBitmap(side, side, Bitmap.Config.ARGB_8888)
         drawable.setBounds(0, 0, side, side)
         drawable.draw(Canvas(bitmap))
-        return bitmapDataUrl(bitmap)
+        return java.io.ByteArrayOutputStream().use { output ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)
+            "data:image/png;base64," + android.util.Base64.encodeToString(output.toByteArray(), android.util.Base64.NO_WRAP)
+        }
     }
 }
 
@@ -496,23 +497,12 @@ private val CONSUMER_NAV_SCRIPT = """
   const bridge = () => window.AndroidConsumerNav;
   const text = v => typeof v === 'string' ? v : '';
   if (window.__consumerNavAdapter) { window.__consumerNavAdapter.reportReady(); return; }
-  const state = {map:null,pin:null,pinData:null,user:null,nav:null,routeOverlays:[],routePrimary:[],routeLabels:[],attempts:0,raf:false,tracking:false,trackRaf:0,pointer:null,gestureSent:false};
+  const state = {map:null,pin:null,appPin:null,pinOwned:false,pinData:null,user:null,nav:null,routeOverlays:[],routePrimary:[],routeLabels:[],attempts:0,raf:false,tracking:false,trackRaf:0,pointer:null,gestureSent:false};
   const style = document.createElement('style');
   style.id = 'consumer-nav-style';
   style.textContent = `
     #shell-navigation,#shell-tray,#shell-map-controls{display:none!important}
     .consumer-map-node{position:fixed;z-index:2147483000;pointer-events:auto;transform:translate(-50%,-50%)}
-    #consumer-pin{width:59px;height:70px;border:0;padding:0;background:transparent;transform-origin:50% 100%;filter:drop-shadow(0 3px 3px rgba(0,0,0,.28))}
-    #consumer-pin .tail{position:absolute;left:22px;top:49px;width:15px;height:15px;transform:rotate(45deg);background:var(--pin);border-right:4px solid white;border-bottom:4px solid white;box-sizing:border-box}
-    #consumer-pin .face{position:absolute;left:2px;top:0;width:55px;height:55px;border:4px solid white;border-radius:50%;box-sizing:border-box;display:grid;place-items:center;background:var(--pin);overflow:hidden}
-    #consumer-pin .face img{width:100%;height:100%;object-fit:cover}
-    #consumer-pin .core{width:16px;height:16px;border-radius:50%;background:white}
-    #consumer-pin .label{position:absolute;left:65px;top:19px;white-space:nowrap;color:#3a3a3c;font:500 13px -apple-system,sans-serif;text-shadow:0 0 3px white,0 0 3px white}
-    #consumer-pin.enter{animation:consumerPinEnter 1730ms linear both}
-    #consumer-pin.minimized{width:23px;height:23px;transform-origin:50% 50%}
-    #consumer-pin.minimized .tail,#consumer-pin.minimized .label{display:none}
-    #consumer-pin.minimized .face{left:0;top:0;width:23px;height:23px;border-width:2px}
-    @keyframes consumerPinEnter{0%,13.3%{transform:translate(-50%,-100%) scale(.39) rotate(0deg)}35%{transform:translate(-50%,-100%) scale(1.03) rotate(4deg)}58%{transform:translate(-50%,-100%) scale(.99) rotate(-2deg)}100%{transform:translate(-50%,-100%) scale(1) rotate(0deg)}}
     #consumer-user{width:18px;height:18px;border:3px solid white;border-radius:50%;background:#0a84ff;box-shadow:0 1px 4px rgba(0,0,0,.35);pointer-events:none}
     #consumer-nav-arrow{width:48px;height:48px;pointer-events:none;transform-origin:50% 50%}
     .consumer-route-label{padding:6px 10px;border-radius:8px;background:white;box-shadow:0 2px 7px rgba(0,0,0,.2);font:14px -apple-system,sans-serif;white-space:nowrap;color:#8e8e93;pointer-events:none}
@@ -530,15 +520,17 @@ private val CONSUMER_NAV_SCRIPT = """
   function node(id,cls){let e=document.getElementById(id);if(!e){e=document.createElement('div');e.id=id;e.className='consumer-map-node '+(cls||'');document.body.appendChild(e)}return e}
   function point(c){return state.map?.convertCoordinateToPointOnPage(new mapkit.Coordinate(c.latitude,c.longitude))}
   function place(e,c){const p=point(c);if(!p||!Number.isFinite(p.x)||!Number.isFinite(p.y)){e.style.display='none';return}e.style.display='block';e.style.left=p.x+'px';e.style.top=p.y+'px'}
-  function updateNodes(){state.raf=false;if(state.pin&&state.pinData)place(state.pin,state.pinData);if(state.user&&state.userData)place(state.user,state.userData);if(state.nav&&state.navData)place(state.nav,state.navData);state.routeLabels.forEach(x=>place(x.node,x.coordinate));if(state.destination)place(state.destination,state.destinationData)}
+  function updateNodes(){state.raf=false;if(state.user&&state.userData)place(state.user,state.userData);if(state.nav&&state.navData)place(state.nav,state.navData);state.routeLabels.forEach(x=>place(x.node,x.coordinate));if(state.destination)place(state.destination,state.destinationData)}
   function queue(){if(!state.raf){state.raf=true;requestAnimationFrame(updateNodes)}}
   function trackNodes(){if(!state.tracking)return;updateNodes();state.trackRaf=requestAnimationFrame(trackNodes)}
   function startTracking(){if(state.tracking)return;state.tracking=true;state.trackRaf=requestAnimationFrame(trackNodes)}
   function stopTracking(){state.tracking=false;if(state.trackRaf)cancelAnimationFrame(state.trackRaf);state.trackRaf=0;queue()}
   function publishCamera(){const c=state.map?.center;if(c)bridge()?.onCamera(JSON.stringify({latitude:c.latitude,longitude:c.longitude,distance:state.map.cameraDistance,rotation:state.map.rotation}))}
   function urlPlaceId(){try{return new URL(location.href).searchParams.get('place-id')||''}catch(_){return''}}
-  function emitSelection(a,initial,frames){const c=a?.coordinate;if(!c)return;const now=urlPlaceId();if((now&&now!==initial)||frames<=0){bridge()?.onSelected(JSON.stringify({id:a.placeId||now||('coordinate:'+c.latitude+','+c.longitude),title:text(a.title)||'Marked Location',category:text(a.pointOfInterestCategory)||text(a.subtitle)||'Apple place',latitude:c.latitude,longitude:c.longitude,source:'apple-place'}));return}requestAnimationFrame(()=>emitSelection(a,initial,frames-1))}
-  function setPin(p){state.pinData=p;if(!p){state.pin?.remove();state.pin=null;return}const fresh=!state.pin||state.pin.dataset.id!==p.id;if(fresh){state.pin?.remove();const e=document.createElement('button');e.id='consumer-pin';e.className='consumer-map-node';e.type='button';e.dataset.id=p.id;e.innerHTML='<span class="tail"></span><span class="face"></span><span class="label"></span>';e.addEventListener('pointerdown',x=>x.stopPropagation());e.addEventListener('click',x=>{x.preventDefault();x.stopPropagation();bridge()?.onSelected(JSON.stringify({...p,source:'app-marker'}))});document.body.appendChild(e);state.pin=e}const face=state.pin.querySelector('.face');face.innerHTML=p.face?'<img alt="" src="'+p.face+'">':'<span class="core"></span>';state.pin.querySelector('.label').textContent=p.title||'';state.pin.style.setProperty('--pin',p.color||'#ff3b30');state.pin.className='consumer-map-node '+(p.expanded?'enter':'minimized');queue()}
+  function emitSelection(a,initial,frames,source){const c=a?.coordinate;if(!c)return;const now=urlPlaceId();if(source==='app-marker'||(now&&now!==initial)||frames<=0){bridge()?.onSelected(JSON.stringify({id:a.placeId||now||('coordinate:'+c.latitude+','+c.longitude),title:text(a.title)||'Marked Location',category:text(a.pointOfInterestCategory)||text(a.subtitle)||'Apple place',latitude:c.latitude,longitude:c.longitude,source:source||'apple-place'}));return}requestAnimationFrame(()=>emitSelection(a,initial,frames-1,source))}
+  function sameCoordinate(a,p){const c=a?.coordinate;return !!c&&Math.abs(c.latitude-p.latitude)<1e-7&&Math.abs(c.longitude-p.longitude)<1e-7}
+  function releasePin(){if(state.pinOwned&&state.pin&&state.map)state.map.removeAnnotation(state.pin);if(state.map?.selectedAnnotation===state.pin)state.map.selectedAnnotation=null;state.pin=null;state.appPin=null;state.pinOwned=false;state.pinData=null}
+  function setPin(p){if(!state.map)return;state.pinData=p;if(!p){releasePin();return}if(!sameCoordinate(state.pin,p)){if(typeof mapkit.MarkerAnnotation!=='function'){bridge()?.onError('Apple marker unavailable','Consumer map did not expose MarkerAnnotation');return}releasePin();state.pin=new mapkit.MarkerAnnotation(new mapkit.Coordinate(p.latitude,p.longitude),{title:p.title||'',color:p.color||'#ff3b30'});state.appPin=state.pin;state.pinOwned=true;state.map.addAnnotation(state.pin)}if(p.expanded)state.map.selectedAnnotation=state.pin;else if(state.map.selectedAnnotation===state.pin)state.map.selectedAnnotation=null}
   function setUserLocation(p){state.userData=p;if(!p){state.user?.remove();state.user=null;return}state.user=node('consumer-user');queue()}
   function setNavigationPose(p){state.navData=p;state.nav=node('consumer-nav-arrow');state.nav.innerHTML='<img alt="" width="48" height="48" src="'+(p.image||'')+'">';state.nav.style.transform='translate(-50%,-50%) rotate('+p.bearing+'deg)';queue()}
   function clearNavigation(){state.navData=null;state.nav?.remove();state.nav=null}
@@ -546,12 +538,12 @@ private val CONSUMER_NAV_SCRIPT = """
   function coords(raw){return raw.map(p=>new mapkit.Coordinate(p[0],p[1]))}
   function line(points,options,primary){const o=new mapkit.PolylineOverlay(points,{style:new mapkit.Style(options)});state.map.addOverlay(o);state.routeOverlays.push(o);if(primary)state.routePrimary.push(o);return o}
   function trafficColor(level){return level==='slow'?'#ff9f0a':level==='heavy'?'#ff3b30':level==='severe'?'#a80000':'#007aff'}
-  function setRoutes(payload){clearRoutes();if(!state.map||!payload?.routes?.length)return;const all=[];payload.routes.forEach((r,i)=>{const c=coords(r.points);if(c.length<2)return;all.push(...c);if(i>0){line(c,{strokeColor:'#8e8e93',strokeOpacity:.62,lineWidth:4.5,lineCap:'round',lineJoin:'round'},false)}else{line(c,{strokeColor:'#ffffff',lineWidth:10,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true);if(r.traffic?.length){r.traffic.forEach(t=>{const seg=c.slice(Math.max(0,t.start),Math.min(c.length,t.end+1));if(seg.length>1)line(seg,{strokeColor:trafficColor(t.level),lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)})}else line(c,{strokeColor:'#007aff',lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)}if(r.time){const n=document.createElement('div');n.className='consumer-map-node consumer-route-label '+(i===0?'selected':'');n.innerHTML='<strong></strong><span></span>';n.querySelector('strong').textContent=r.time;n.querySelector('span').textContent=r.subtitle||'';document.body.appendChild(n);state.routeLabels.push({node:n,coordinate:r.points[Math.floor(r.points.length/2)]&&{latitude:r.points[Math.floor(r.points.length/2)][0],longitude:r.points[Math.floor(r.points.length/2)][1]}})}});const last=payload.routes[0].points[payload.routes[0].points.length-1];if(last){state.destination=node('consumer-destination');state.destinationData={latitude:last[0],longitude:last[1]}}if(all.length)state.map.showItems(state.routeOverlays,{padding:{top:100,right:100,bottom:payload.bottomPadding||320,left:100}});queue();if(payload.reveal){const start=performance.now();const tick=now=>{const p=Math.min(1,(now-start)/1400);state.routePrimary.forEach(o=>o.style.strokeEnd=p);if(p<1)requestAnimationFrame(tick)};requestAnimationFrame(tick)}}
+  function setRoutes(payload){clearRoutes();if(!state.map||!payload?.routes?.length)return;const all=[];payload.routes.forEach((r,i)=>{const c=coords(r.points);if(c.length<2)return;all.push(...c);if(i>0){line(c,{strokeColor:'#8e8e93',strokeOpacity:.62,lineWidth:4.5,lineCap:'round',lineJoin:'round'},false)}else{line(c,{strokeColor:'#ffffff',lineWidth:10,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true);if(r.traffic?.length){r.traffic.forEach(t=>{const seg=c.slice(Math.max(0,t.start),Math.min(c.length,t.end+1));if(seg.length>1)line(seg,{strokeColor:trafficColor(t.level),lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)})}else line(c,{strokeColor:'#007aff',lineWidth:6,lineCap:'round',lineJoin:'round',strokeEnd:payload.reveal?0:1},true)}if(r.time){const n=document.createElement('div');n.className='consumer-map-node consumer-route-label '+(i===0?'selected':'');n.innerHTML='<strong></strong><span></span>';n.querySelector('strong').textContent=r.time;n.querySelector('span').textContent=r.subtitle||'';document.body.appendChild(n);state.routeLabels.push({node:n,coordinate:r.points[Math.floor(r.points.length/2)]&&{latitude:r.points[Math.floor(r.points.length/2)][0],longitude:r.points[Math.floor(r.points.length/2)][1]}})}});const last=payload.routes[0].points[payload.routes[0].points.length-1];if(last){state.destination=node('consumer-destination');state.destinationData={latitude:last[0],longitude:last[1]}}if(all.length){const bottom=Math.max(120,Number(payload.bottomPadding)||180);state.map.showItems(state.routeOverlays,{padding:new mapkit.Padding(56,56,bottom,56)})}queue();if(payload.reveal){const start=performance.now();const tick=now=>{const p=Math.max(0,Math.min(1,(now-start)/1400));state.routePrimary.forEach(o=>o.style.strokeEnd=p);if(p<1)requestAnimationFrame(tick)};requestAnimationFrame(tick)}}
   function setRouteProgress(t){const v=Math.max(0,Math.min(1,Number(t)||0));state.routePrimary.forEach(o=>o.style.strokeStart=v)}
   function setMapType(type){if(state.map)state.map.mapType=['standard','satellite','hybrid'].includes(type)?type:'standard'}
-  function setCamera(p){if(!state.map||!p)return;state.map.setPadding({top:0,right:0,bottom:p.bottomPadding||0,left:0},!!p.animated);state.map.setCenterAnimated(new mapkit.Coordinate(p.latitude,p.longitude),!!p.animated);if(Number.isFinite(p.distance))state.map.setCameraDistanceAnimated(p.distance,!!p.animated);if(Number.isFinite(p.rotation))state.map.setRotationAnimated(p.rotation,!!p.animated)}
+  function setCamera(p){if(!state.map||!p)return;state.map.setPadding(new mapkit.Padding(0,0,Number(p.bottomPadding)||0,0),!!p.animated);state.map.setCenterAnimated(new mapkit.Coordinate(p.latitude,p.longitude),!!p.animated);if(Number.isFinite(p.distance))state.map.setCameraDistanceAnimated(p.distance,!!p.animated);if(Number.isFinite(p.rotation))state.map.setRotationAnimated(p.rotation,!!p.animated)}
   function reportReady(){if(state.map)bridge()?.onReady()}
-  function install(){viewport();const m=window.mapkit?.maps?.[0];if(!m){if(++state.attempts<900)requestAnimationFrame(install);else bridge()?.onError('Consumer map','Timed out waiting for maps.apple.com renderer');return}state.map=m;m.addEventListener('select',e=>{const a=e.annotation||m.selectedAnnotation;emitSelection(a,urlPlaceId(),30);requestAnimationFrame(()=>{if(m.selectedAnnotation===a)m.selectedAnnotation=null})});m.addEventListener('region-change-start',startTracking);m.addEventListener('region-change-end',()=>{stopTracking();publishCamera()});const target=document.querySelector('#shell-map')||document.body;target.addEventListener('pointerdown',e=>{state.pointer={x:e.clientX,y:e.clientY,time:performance.now()};state.gestureSent=false},true);target.addEventListener('pointermove',e=>{if(!state.pointer)return;const d=Math.hypot(e.clientX-state.pointer.x,e.clientY-state.pointer.y);if(d>6&&!state.gestureSent){state.gestureSent=true;bridge()?.onGesture()}},true);target.addEventListener('pointerup',e=>{const p=state.pointer;state.pointer=null;if(!p)return;const d=Math.hypot(e.clientX-p.x,e.clientY-p.y);if(performance.now()-p.time>=500&&d<12){const c=m.convertPointOnPageToCoordinate({x:e.clientX,y:e.clientY});if(c)bridge()?.onLongPress(JSON.stringify({latitude:c.latitude,longitude:c.longitude}))}},true);bridge()?.onReady()}
+  function install(){viewport();const m=window.mapkit?.maps?.[0];if(!m){if(++state.attempts<900)requestAnimationFrame(install);else bridge()?.onError('Consumer map','Timed out waiting for maps.apple.com renderer');return}state.map=m;m.isScrollEnabled=true;m.isZoomEnabled=true;m.isRotationEnabled=true;m.showsCompass=mapkit.FeatureVisibility.Visible;m.addEventListener('select',e=>{const a=e.annotation||m.selectedAnnotation;if(!a)return;if(a!==state.pin){if(state.pinOwned)releasePin();state.pin=a;state.pinOwned=a===state.appPin}emitSelection(a,urlPlaceId(),30,state.pinOwned?'app-marker':'apple-place')});m.addEventListener('region-change-start',startTracking);m.addEventListener('region-change-end',()=>{stopTracking();publishCamera()});const target=document.querySelector('#shell-map')||document.body;target.addEventListener('pointerdown',e=>{state.pointer={x:e.clientX,y:e.clientY,time:performance.now()};state.gestureSent=false},true);target.addEventListener('pointermove',e=>{if(!state.pointer)return;const d=Math.hypot(e.clientX-state.pointer.x,e.clientY-state.pointer.y);if(d>6&&!state.gestureSent){state.gestureSent=true;bridge()?.onGesture()}},true);target.addEventListener('pointerup',e=>{const p=state.pointer;state.pointer=null;if(!p)return;const d=Math.hypot(e.clientX-p.x,e.clientY-p.y);if(performance.now()-p.time>=500&&d<12){const c=m.convertPointOnPageToCoordinate(new DOMPoint(e.clientX,e.clientY));if(c)bridge()?.onLongPress(JSON.stringify({latitude:c.latitude,longitude:c.longitude}))}},true);bridge()?.onCamera(JSON.stringify({event:'controls',scroll:m.isScrollEnabled,zoom:m.isZoomEnabled,rotation:m.isRotationEnabled,compass:String(m.showsCompass)}));bridge()?.onReady()}
   addEventListener('resize',viewport);visualViewport?.addEventListener('resize',viewport);
   window.__consumerNavAdapter={setPin,setUserLocation,setNavigationPose,clearNavigation,setRoutes,clearRoutes,setRouteProgress,setMapType,setCamera,reportReady};
   install();
