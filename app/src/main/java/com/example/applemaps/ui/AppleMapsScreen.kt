@@ -55,6 +55,9 @@ import com.example.applemaps.map.Place
 import com.example.applemaps.map.PlaceRepository
 import com.example.applemaps.map.AppleBrowseClient
 import com.example.applemaps.map.AppleHomeContent
+import com.example.applemaps.map.AirportBrowseCategory
+import com.example.applemaps.map.RelatedPlace
+import com.example.applemaps.map.routeCoordinate
 import com.example.applemaps.map.ConsumerRendererState
 import com.example.applemaps.map.RouteLayer
 import com.example.applemaps.map.RouteRepository
@@ -85,6 +88,8 @@ import kotlinx.coroutines.launch
  * arrow, heading follow pauses on a real map gesture, and the searchable "+ Add Stop" row appends a via waypoint.
  * Find Nearby and editorial Guide taps retrieve Apple Web data in the background and render it in a native tray;
  * their corresponding hidden consumer page keeps Apple's native result markers on the map.
+ * Large venues retain Apple's photo albums, attributed About and amenity content, related-place list, directory,
+ * browse categories, venue bounds, and mode-specific routing entrances in that same native place-card flow.
  * Phone rendering for this consumer-guidance revision remains device-unverified until its APK is exercised.
  */
 /** Preserves the former 0.16-per-60Hz-frame follow curve at every display refresh rate. */
@@ -189,6 +194,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var navProgress by remember { mutableStateOf(0f) }
     var searchActive by remember { mutableStateOf(false) }            // full-screen search overlay open
     var browseState by remember { mutableStateOf<AppleBrowseState?>(null) }
+    var browseReturnPlace by remember { mutableStateOf<Place?>(null) }
     var browseRequestId by remember { mutableStateOf(0) }
     val browseSheet = remember { AppleSheetController() }
     var homeContent by remember { mutableStateOf<AppleHomeContent?>(null) }
@@ -319,13 +325,13 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         RouteLayer.clear(mapController)
         scope.launch {
             runCatching {
-                val d = MapCoordinate(dest.lat, dest.lon)
                 val o = mapController.lastKnownLocation()
                 if (o == null) {
                     if (requestId == routeRequestId) directionsError = "Current location is required to calculate directions."
                     DiagLog.log("DIRECTIONS", "event=origin_missing")
                     return@launch
                 }
+                val d = dest.routeCoordinate(dirMode, o)
                 // Avoid set → route via Valhalla (honors use_tolls/use_highways keyless); else the normal chain.
                 val routes = if (avoidTolls || avoidHighways)
                     RouteRepository.valhallaRoute(o, d, osrmProfile(dirMode), avoidTolls, avoidHighways, stops.value)
@@ -391,13 +397,56 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             val real = PlaceRepository.fetchApplePlace(title, location.latitude, location.longitude, selection.id)
                 ?: PlaceRepository.fetchGooglePlace(title, location.latitude, location.longitude)
             if (selectionGeneration == requestGeneration && place?.lat == location.latitude && place?.lon == location.longitude) {
-                if (real != null) place = real
+                if (real != null) {
+                    place = real
+                    real.airportDetails?.bounds?.let(mapController::centerOnBounds)
+                }
                 else {
                     val resolved = PlaceRepository.reverseGeocode(location.latitude, location.longitude)
                     place = place?.copy(locality = resolved.locality, address = resolved.address)
                 }
                 placeLoading = false
             }
+        }
+    }
+
+    fun openRelatedPlace(parent: Place, related: RelatedPlace) {
+        selectionGeneration++
+        val requestGeneration = selectionGeneration
+        placeLoading = true
+        scope.launch {
+            val resolved = PlaceRepository.fetchApplePlace(related.name, parent.lat, parent.lon, related.id)
+            if (selectionGeneration != requestGeneration) return@launch
+            if (resolved == null) {
+                placeLoading = false
+                return@launch
+            }
+            place = resolved
+            pin = MapCoordinate(resolved.lat, resolved.lon)
+            pinLabel = resolved.name
+            applyCategoryPin(resolved.category)
+            minimized = false
+            placeLoading = false
+            resolved.airportDetails?.bounds?.let(mapController::centerOnBounds)
+                ?: recenterOnPin(MapCoordinate(resolved.lat, resolved.lon))
+        }
+    }
+
+    fun openAirportCategory(parent: Place, category: AirportBrowseCategory) {
+        browseReturnPlace = parent
+        place = null
+        pin = null
+        browseRequestId++
+        val requestId = browseRequestId
+        browseState = AppleBrowseState.Loading(category.label)
+        scope.launch {
+            val result = runCatching {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    AppleBrowseClient.category(category.query, parent.lat, parent.lon)
+                }
+            }.getOrNull()
+            if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Category)
+                ?: AppleBrowseState.Error(category.label, "Apple Maps did not return places in this airport category.")
         }
     }
 
@@ -443,6 +492,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             homeError = homeError,
             onCategory = { category ->
                 if (mapController.showHomeCategory(category.query)) {
+                    browseReturnPlace = null
                     val requestId = ++browseRequestId
                     browseState = AppleBrowseState.Loading(category.label)
                     scope.launch {
@@ -464,6 +514,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             },
             onGuide = { curatedId ->
                 if (mapController.showGuide(curatedId)) {
+                    browseReturnPlace = null
                     val requestId = ++browseRequestId
                     browseState = AppleBrowseState.Loading("Guide")
                     scope.launch {
@@ -620,6 +671,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                         AppleCardEnter(cardPlace.name) { when {   // P1 3.2: body fades/rises on a NEW place too
                             isStation && st != null -> StationCardBody(st)
                             else -> PlaceCardBody(cardPlace, onDirections = startDirections, loading = placeLoading,
+                                onRelatedPlaceClick = { openRelatedPlace(cardPlace, it) },
+                                onAirportCategoryClick = { openAirportCategory(cardPlace, it) },
                                 distanceMiles = run {   // miles from the user's real location to the place → DISTANCE ribbon column
                                     mapController.lastKnownLocation()?.let { loc ->
                                         val d = FloatArray(1)
@@ -629,8 +682,20 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                                 },
                                 onPhotoClick = { i, bounds ->
                                 gallerySourceBounds = bounds
-                                gallery = (if (cardPlace.photoUrls.isNotEmpty()) cardPlace.photoUrls.mapIndexed { k, u -> GalleryPhoto(u, cardPlace.photoLabels.getOrNull(k), cardPlace.photoAttributionUrls.getOrNull(k), "Google Maps".takeIf { cardPlace.ratingSource == "Google" }) }
-                                           else cardPlace.photoLabels.map { GalleryPhoto("", it) }) to i
+                                val album = cardPlace.photoAlbums.getOrNull(i)
+                                gallery = if (album != null) {
+                                    album.photos.map { photo ->
+                                        GalleryPhoto(
+                                            photo.url,
+                                            photo.caption ?: photo.author?.let { "From $it" },
+                                            photo.actionUri,
+                                            photo.provider,
+                                        )
+                                    } to 0
+                                } else {
+                                    (if (cardPlace.photoUrls.isNotEmpty()) cardPlace.photoUrls.mapIndexed { k, u -> GalleryPhoto(u, cardPlace.photoLabels.getOrNull(k), cardPlace.photoAttributionUrls.getOrNull(k), "Google Maps".takeIf { cardPlace.ratingSource == "Google" }) }
+                                     else cardPlace.photoLabels.map { GalleryPhoto("", it) }) to i
+                                }
                                 DiagLog.log("LOOKWEB", "photoExpand", "index=$i", "hasBounds=${if (bounds != null) 1 else 0}")
                             })
                         } }
@@ -690,6 +755,13 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val closeBrowse = {
             browseRequestId++
             browseState = null
+            browseReturnPlace?.let {
+                place = it
+                pin = MapCoordinate(it.lat, it.lon)
+                pinLabel = it.name
+                applyCategoryPin(it.category)
+            }
+            browseReturnPlace = null
         }
         androidx.compose.animation.AnimatedVisibility(
             visible = browseState != null && place == null && !navMode,
@@ -706,6 +778,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     header = { AppleBrowseHeader(state, closeBrowse) },
                     body = {
                         AppleBrowseBody(state) { result ->
+                            browseReturnPlace = null
                             handleConsumerSelection(
                                 ConsumerSelectedPlace(
                                     id = result.id,

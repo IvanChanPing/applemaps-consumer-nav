@@ -33,7 +33,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.applemaps.R
 import com.example.applemaps.diag.DiagLog
+import com.example.applemaps.map.AirportBrowseCategory
+import com.example.applemaps.map.AirportDetails
 import com.example.applemaps.map.Place
+import com.example.applemaps.map.PlaceAccessPoint
+import com.example.applemaps.map.PlaceAmenity
+import com.example.applemaps.map.RelatedPlace
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -213,7 +218,15 @@ private fun closingSoon(place: Place): Boolean {
 }
 
 @Composable
-fun PlaceCardBody(place: Place, onPhotoClick: (Int, Rect?) -> Unit = { _, _ -> }, onDirections: () -> Unit = {}, loading: Boolean = false, distanceMiles: Double? = null) {
+fun PlaceCardBody(
+    place: Place,
+    onPhotoClick: (Int, Rect?) -> Unit = { _, _ -> },
+    onRelatedPlaceClick: (RelatedPlace) -> Unit = {},
+    onAirportCategoryClick: (AirportBrowseCategory) -> Unit = {},
+    onDirections: () -> Unit = {},
+    loading: Boolean = false,
+    distanceMiles: Double? = null,
+) {
     val c = LocalAppleColors.current
     // P1 3.1: spinner → content CROSSFADES (150ms CSS ease-out, the traced .mw-card fade) instead of an instant swap
     androidx.compose.animation.Crossfade(loading,
@@ -234,20 +247,22 @@ fun PlaceCardBody(place: Place, onPhotoClick: (Int, Rect?) -> Unit = { _, _ -> }
                 place.photoUrls,
                 place.photoLabels,
                 providerAttribution = "Google Maps".takeIf { place.ratingSource == "Google" },
+                providerAttributions = place.photoAlbums.map { it.photos.firstOrNull()?.provider },
                 onClick = onPhotoClick,
             )
         }
         // Look Around stays on the map above the sheet; AppleMapsScreen owns its thumbnail/control.
-        if (!place.description.isNullOrEmpty()) Section("About") {
-            Text(place.description, color = c.glyphDefault, fontSize = 17.sp, lineHeight = 22.sp)
-        }
+        if (!place.description.isNullOrEmpty()) AboutSection(place)
         if ((place.rating != null && (place.ratingCount ?: 0) > 0) || place.reviews.isNotEmpty()) RatingsReviews(place)
-        if (place.amenities.isNotEmpty()) Section("Good to Know") {
-            place.amenities.forEachIndexed { i, a -> if (i > 0) Spacer(Modifier.height(4.dp)); AmenityRow(a) }
+        if (place.amenities.isNotEmpty() || place.amenityDetails.isNotEmpty()) Section("Good to Know") {
+            val amenities = place.amenityDetails.ifEmpty { place.amenities.map(::PlaceAmenity) }
+            amenities.forEachIndexed { i, a -> if (i > 0) Spacer(Modifier.height(4.dp)); AmenityRow(a) }
         }
-        if (place.alsoHere.isNotEmpty()) Section("Also at This Location") {
+        if (place.relatedPlaces.isNotEmpty()) RelatedPlacesSection(place.relatedPlaces, onRelatedPlaceClick)
+        else if (place.alsoHere.isNotEmpty()) Section("Also at This Location") {
             place.alsoHere.forEach { Text(it, color = c.glyphDefault, fontSize = 17.sp, modifier = Modifier.padding(vertical = 6.dp)) }
         }
+        place.airportDetails?.let { AirportDirectorySection(it, onAirportCategoryClick) }
         // Details — Hours in its own platter, then a Website/Phone(blue links)/Address(+directions) platter
         SectionHeader("Details")
         place.hours?.let { Platter { HoursDetail(place) } }
@@ -285,6 +300,176 @@ fun PlaceCardBody(place: Place, onPhotoClick: (Int, Rect?) -> Unit = { _, _ -> }
     }
     }
     }
+}
+
+@Composable
+private fun AboutSection(place: Place) {
+    val colors = LocalAppleColors.current
+    val context = LocalContext.current
+    var expanded by remember(place.name, place.description) { mutableStateOf(false) }
+    Section("About") {
+        Text(
+            place.description.orEmpty(), color = colors.glyphDefault, fontSize = 17.sp, lineHeight = 22.sp,
+            maxLines = if (expanded) Int.MAX_VALUE else 5, overflow = TextOverflow.Ellipsis,
+        )
+        if (place.description.orEmpty().length > 220) {
+            Spacer(Modifier.height(8.dp))
+            Text(if (expanded) "Less" else "More", color = Color(0xFF007AFF), fontSize = 17.sp,
+                modifier = Modifier.clickable { expanded = !expanded })
+        }
+        place.aboutAttribution?.let { attribution ->
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "More on ${attribution.text}",
+                color = if (attribution.uri == null) colors.glyphMuted else Color(0xFF007AFF),
+                fontSize = 15.sp,
+                modifier = attribution.uri?.let { uri ->
+                    Modifier.clickable {
+                        runCatching {
+                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(uri)))
+                        }
+                    }
+                } ?: Modifier,
+            )
+        }
+    }
+}
+
+@Composable
+private fun RelatedPlacesSection(places: List<RelatedPlace>, onPlaceClick: (RelatedPlace) -> Unit) {
+    val colors = LocalAppleColors.current
+    var expanded by remember(places) { mutableStateOf(false) }
+    Spacer(Modifier.height(20.dp))
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("Also at This Location", color = colors.glyphDefault, fontSize = 24.sp,
+            fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        if (places.size > 6) Text(if (expanded) "Less" else "More", color = Color(0xFF007AFF), fontSize = 17.sp,
+            modifier = Modifier.clickable { expanded = !expanded }.padding(8.dp))
+    }
+    Spacer(Modifier.height(8.dp))
+    if (expanded) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).clip(RoundedCornerShape(16.dp)).background(Color.White)) {
+            places.forEachIndexed { index, related ->
+                RelatedPlaceRow(related, onPlaceClick)
+                if (index < places.lastIndex) HorizontalDivider(color = colors.borderMuted, thickness = 0.5.dp)
+            }
+        }
+    } else {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            places.take(6).forEach { related ->
+                Column(
+                    Modifier.width(150.dp).height(150.dp).clip(RoundedCornerShape(16.dp)).background(Color.White)
+                        .applePressScale { onPlaceClick(related) }.padding(16.dp),
+                ) {
+                    Box(Modifier.size(34.dp).clip(CircleShape).background(Color(0xFFE5E5EA)), contentAlignment = Alignment.Center) {
+                        Image(painterResource(R.drawable.ic_car_fill), null, Modifier.size(18.dp),
+                            colorFilter = ColorFilter.tint(colors.glyphMuted))
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Text(related.name, color = colors.glyphDefault, fontSize = 16.sp, fontWeight = FontWeight.SemiBold,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.weight(1f))
+                    RelatedRating(related)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RelatedPlaceRow(place: RelatedPlace, onClick: (RelatedPlace) -> Unit) {
+    val colors = LocalAppleColors.current
+    Row(Modifier.fillMaxWidth().applePressScale { onClick(place) }.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(36.dp).clip(CircleShape).background(Color(0xFFE5E5EA)), contentAlignment = Alignment.Center) {
+            Image(painterResource(R.drawable.ic_mappin_and_ellipse), null, Modifier.size(18.dp),
+                colorFilter = ColorFilter.tint(colors.glyphMuted))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(place.name, color = colors.glyphDefault, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+            RelatedRating(place)
+        }
+        Image(painterResource(R.drawable.ic_chevron_forward_semibold), null, Modifier.size(14.dp),
+            colorFilter = ColorFilter.tint(colors.glyphMuted))
+    }
+}
+
+@Composable
+private fun RelatedRating(place: RelatedPlace) {
+    val colors = LocalAppleColors.current
+    val score = place.rating
+    val maximum = place.ratingMaximum
+    if (score != null && maximum != null && maximum > 0.0) {
+        val value = if (maximum <= 5.0) "★ %.1f".format(score) else "👍 ${(score / maximum * 100).roundToInt()}%"
+        Text(
+            listOfNotNull(place.ratingSource, value, place.ratingCount?.let { "($it)" }).joinToString(" · "),
+            color = if (maximum <= 5.0) Color(0xFFFF9500) else colors.glyphMuted,
+            fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
+private fun AirportDirectorySection(details: AirportDetails, onCategoryClick: (AirportBrowseCategory) -> Unit) {
+    val colors = LocalAppleColors.current
+    var airlinesExpanded by remember(details) { mutableStateOf(false) }
+    SectionHeader(listOfNotNull("Airport Directory", details.code).joinToString(" · "))
+    if (details.browseCategories.isNotEmpty()) {
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            details.browseCategories.forEach { category ->
+                Row(
+                    Modifier.clip(RoundedCornerShape(14.dp)).background(Color.White)
+                        .applePressScale { onCategoryClick(category) }.padding(horizontal = 14.dp, vertical = 11.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Image(painterResource(airportCategoryIcon(category.label)), null, Modifier.size(18.dp),
+                        colorFilter = ColorFilter.tint(Color(0xFF007AFF)))
+                    Spacer(Modifier.width(8.dp))
+                    Text(category.label, color = colors.glyphDefault, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+    }
+    if (details.terminals.isNotEmpty()) Section("Terminals") {
+        details.terminals.forEachIndexed { index, terminal ->
+            if (index > 0) HorizontalDivider(color = colors.borderMuted, thickness = 0.5.dp)
+            Column(Modifier.padding(vertical = 8.dp)) {
+                Text(terminal.name, color = colors.glyphDefault, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                if (terminal.levels.isNotEmpty()) Text(terminal.levels.joinToString(" · "), color = colors.glyphMuted,
+                    fontSize = 14.sp, lineHeight = 18.sp)
+            }
+        }
+    }
+    if (details.airlines.isNotEmpty()) Section("Airlines") {
+        val shown = if (airlinesExpanded) details.airlines else details.airlines.take(5)
+        shown.forEach { Text(it, color = colors.glyphDefault, fontSize = 17.sp, modifier = Modifier.padding(vertical = 5.dp)) }
+        if (details.airlines.size > 5) Text(if (airlinesExpanded) "Less" else "More", color = Color(0xFF007AFF),
+            fontSize = 17.sp, modifier = Modifier.clickable { airlinesExpanded = !airlinesExpanded }.padding(top = 8.dp))
+    }
+    if (details.accessPoints.isNotEmpty() || details.elevationMeters != null) Section("Venue Information") {
+        val walking = details.accessPoints.count(PlaceAccessPoint::walking)
+        val driving = details.accessPoints.count(PlaceAccessPoint::driving)
+        if (walking > 0) Text("$walking walking entrances", color = colors.glyphDefault, fontSize = 17.sp,
+            modifier = Modifier.padding(vertical = 4.dp))
+        if (driving > 0) Text("$driving driving entrances", color = colors.glyphDefault, fontSize = 17.sp,
+            modifier = Modifier.padding(vertical = 4.dp))
+        details.elevationMeters?.let { Text("Elevation · %.1f m".format(it), color = colors.glyphDefault,
+            fontSize = 17.sp, modifier = Modifier.padding(vertical = 4.dp)) }
+    }
+}
+
+private fun airportCategoryIcon(label: String): Int = when (label.lowercase()) {
+    "bag claims" -> R.drawable.ic_bag_fill
+    "food", "drinks" -> R.drawable.ic_fork_knife
+    "shops" -> R.drawable.ic_bag
+    "restrooms" -> R.drawable.ic_restroomsfamilyrestroom
+    else -> R.drawable.ic_building_2_fill
 }
 
 // White r16 platter (traced sc-platter-container: bg #fff, r16, pad 20, 20dp side margin on the card).
@@ -450,7 +635,7 @@ private fun usesStarRating(place: Place): Boolean =
             if (placed > 0) RibbonDivider()
             RibbonCol(RibbonColWidth, "ACCEPTS") {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    payments.take(2).forEachIndexed { i, a -> if (i > 0) Spacer(Modifier.width(6.dp)); Image(painterResource(amenityIcon(a)), null, Modifier.height(18.dp), colorFilter = ColorFilter.tint(c.glyphDefault)) }
+                    payments.take(2).forEachIndexed { i, a -> if (i > 0) Spacer(Modifier.width(6.dp)); Image(painterResource(amenityIcon(PlaceAmenity(a))), null, Modifier.height(18.dp), colorFilter = ColorFilter.tint(c.glyphDefault)) }
                 }
             }; placed++
         }
@@ -505,6 +690,7 @@ private fun usesStarRating(place: Place): Boolean =
     urls: List<String>,
     labels: List<String>,
     providerAttribution: String? = null,
+    providerAttributions: List<String?> = emptyList(),
     onClick: (Int, Rect?) -> Unit = { _, _ -> },
 ) {
     val n = (if (urls.isNotEmpty()) urls.size else labels.size).coerceAtMost(10)
@@ -527,12 +713,13 @@ private fun usesStarRating(place: Place): Boolean =
                         contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.matchParentSize())
                 }
                 // bottom gradient + white title (traced sc-photo-gradient-overlay 80dp, sc-photo-item-title 17px/600 white)
-                if (label != null || providerAttribution != null) {
+                val provider = providerAttributions.getOrNull(i) ?: providerAttribution
+                if (label != null || provider != null) {
                     Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(80.dp)
                         .background(androidx.compose.ui.graphics.Brush.verticalGradient(listOf(Color.Transparent, Color(0x66000000)))))
                     Column(Modifier.align(Alignment.BottomStart).padding(16.dp)) {
                         label?.let { Text(it, color = Color.White, fontSize = 15.sp, fontWeight = FontWeight.SemiBold) }
-                        providerAttribution?.let { Text(it, color = Color.White, fontSize = 12.sp) }
+                        provider?.let { Text(it, color = Color.White, fontSize = 12.sp) }
                     }
                 }
             }
@@ -541,9 +728,10 @@ private fun usesStarRating(place: Place): Boolean =
 }
 
 // Map an amenity label to its real glyph (traced from the "Good to Know" rows).
-private fun amenityIcon(name: String): Int {
-    val n = name.lowercase()
+private fun amenityIcon(amenity: PlaceAmenity): Int {
+    val n = listOfNotNull(amenity.name, amenity.symbolName).joinToString(" ").lowercase()
     return when {
+        "reservation" in n -> R.drawable.ic_reservations
         "apple pay" in n -> R.drawable.ic_applepay
         "contactless" in n -> R.drawable.ic_nfccontactlesspayment
         "wheelchair" in n || "accessible" in n -> R.drawable.ic_accessiblewheelchair
@@ -555,12 +743,12 @@ private fun amenityIcon(name: String): Int {
     }
 }
 
-@Composable private fun AmenityRow(name: String) {
+@Composable private fun AmenityRow(amenity: PlaceAmenity) {
     val c = LocalAppleColors.current
     Row(Modifier.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Image(painterResource(amenityIcon(name)), null, Modifier.size(22.dp), colorFilter = ColorFilter.tint(c.glyphDefault))
+        Image(painterResource(amenityIcon(amenity)), null, Modifier.size(22.dp), colorFilter = ColorFilter.tint(c.glyphDefault))
         Spacer(Modifier.width(14.dp))
-        Text(name, color = c.glyphDefault, fontSize = 17.sp)
+        Text(amenity.name, color = c.glyphDefault, fontSize = 17.sp)
     }
 }
 

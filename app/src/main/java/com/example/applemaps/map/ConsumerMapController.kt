@@ -36,6 +36,7 @@ import com.example.applemaps.diag.DiagLog
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.cos
+import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
@@ -259,6 +260,20 @@ class ConsumerMapController(private val context: Context) : LocationListener {
             .put("animated", animated)
         call("setCamera", payload.toString())
         DiagLog.log("CONSUMERMAP", "event=camera", "zoom=${zoom ?: -1.0}", "rotation=${rotation ?: -1.0}")
+    }
+
+    /** Frames a selected large venue from Apple's own bounds without invoking MapKit route/item fitting. */
+    fun centerOnBounds(bounds: PlaceBounds) {
+        if (bounds.southLat !in -85.05112878..85.05112878 || bounds.northLat !in -85.05112878..85.05112878 ||
+            bounds.westLon !in -180.0..180.0 || bounds.eastLon !in -180.0..180.0 ||
+            bounds.southLat >= bounds.northLat || bounds.westLon >= bounds.eastLon
+        ) return
+        val latitude = (bounds.southLat + bounds.northLat) / 2.0
+        val longitude = (bounds.westLon + bounds.eastLon) / 2.0
+        val latSpan = bounds.northLat - bounds.southLat
+        val lonSpan = (bounds.eastLon - bounds.westLon) * cos(Math.toRadians(latitude)).coerceAtLeast(0.2)
+        val zoom = (log2(360.0 / maxOf(latSpan, lonSpan).coerceAtLeast(1e-6)) - 0.75).coerceIn(5.0, 18.0)
+        centerOn(MapCoordinate(latitude, longitude), zoom = zoom)
     }
 
     fun setNavigationPose(coordinate: MapCoordinate, bearing: Double, follow: Boolean) {

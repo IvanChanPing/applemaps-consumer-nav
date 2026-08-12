@@ -25,10 +25,29 @@ class AppleDataParityTest {
               {"categorizedPhotos":{"categoryName":[{"stringValue":"Interior"}],"photo":[{"photo":{"photoVersion":[{"url":"https://is1-ssl.mzstatic.com/image/thumb/interior/320x320bb.jpg","urlType":"URL_TYPE_REGULAR"}]}}]}},
               {"categorizedPhotos":{"categoryName":[{"stringValue":"All Photos"}],"photo":[{"photo":{"photoVersion":[{"url":"https://is1-ssl.mzstatic.com/image/thumb/all/320x320bb.jpg","urlType":"URL_TYPE_REGULAR"}]}}]}}
             ]},
-            {"type":"COMPONENT_TYPE_TEXT_BLOCK","value":[{"textBlock":{"title":[{"stringValue":"Wikipedia"}],"text":[{"stringValue":"Finland's primary international airport."}]}}]},
+            {"type":"COMPONENT_TYPE_TEXT_BLOCK","value":[{"textBlock":{"title":"Wikipedia","text":"Finland's primary international airport.","attributionUrl":"https://en.wikipedia.org/wiki/Helsinki_Airport"}}]},
+            {"type":"COMPONENT_TYPE_AMENITIES","value":[{"amenities":{"amenityV2":[
+              {"amenityPresent":true,"name":[{"stringValue":"Reservations"}],"symbolImageName":"reservations"},
+              {"amenityPresent":true,"name":[{"stringValue":"Free Wi-Fi"}],"symbolImageName":"wifi"}
+            ]}}]},
             {"type":"COMPONENT_TYPE_TEMPLATE_PLACE","value":[{"templatePlace":{"templateData":[
-              {"title":[{"stringValue":"Hilton Helsinki Airport"}]},{"title":[{"stringValue":"P3 Parking"}]}
-            ]}}]}
+              {"mapsId":{"shardedId":{"muid":"1"}},"title":[{"stringValue":"Hilton Helsinki Airport"}],"footer":{"ratingData":{"vendorName":"Yelp","rating":[{"score":4.2,"maxScore":5,"numRatingsUsedForScore":20}]}}},
+              {"mapsId":{"shardedId":{"muid":"2"}},"title":[{"stringValue":"P3 Parking"}]}
+            ]}}]},
+            {"type":"COMPONENT_TYPE_BOUNDS","value":[{"bounds":{"mapRegion":{"southLat":60.30,"westLng":24.90,"northLat":60.34,"eastLng":25.00}}}]},
+            {"type":"COMPONENT_TYPE_BROWSE_CATEGORIES","value":[{"browseCategories":{"browseCategory":[
+              {"displayString":"Gates","popularDisplayToken":"Gates"},{"displayString":"Food","popularDisplayToken":"Food","subCategory":[{"displayString":"Coffee Shops"}]}
+            ]}}]},
+            {"type":"COMPONENT_TYPE_VENUE_INFO","value":[{"venueInfo":{"featureValue":{"featureVenue":{
+              "venueContainer":{"label":{"nameShort":"HEL"}},
+              "building":[{"label":{"name":"Terminal 2"},"levelId":["level-arrivals","level-departures"]}],
+              "level":[{"levelId":"level-arrivals","label":{"name":"Arrivals"}},{"levelId":"level-departures","label":{"name":"Departures"}}]
+            }},"itemList":{"item":["Finnair","SAS"]}}}]},
+            {"type":"COMPONENT_TYPE_ROAD_ACCESS_INFO","value":[{"accessInfo":{"roadAccessPoint":[
+              {"location":{"lat":60.310,"lng":24.950},"walkingDirection":"ENTRY_EXIT"},
+              {"location":{"lat":60.320,"lng":24.970},"drivingDirection":"ENTRY"}
+            ]}}]},
+            {"type":"COMPONENT_TYPE_FACTOID","value":[{"factoid":{"entryType":"ELEVATION","number":55.0}}]}
           ]}}}}
         """.trimIndent()
         val place = ApplePlaceClient.parsePlace(
@@ -49,6 +68,20 @@ class AppleDataParityTest {
             place?.photoUrls,
         )
         assertEquals(listOf("Hilton Helsinki Airport", "P3 Parking"), place?.alsoHere)
+        assertEquals(3, place?.photoAlbums?.size)
+        assertEquals("Wikipedia", place?.aboutAttribution?.text)
+        assertEquals("https://en.wikipedia.org/wiki/Helsinki_Airport", place?.aboutAttribution?.uri)
+        assertEquals(listOf("Reservations", "Free Wi-Fi"), place?.amenities)
+        assertEquals("reservations", place?.amenityDetails?.first()?.symbolName)
+        assertEquals(listOf("I1", "I2"), place?.relatedPlaces?.map { it.id })
+        assertEquals(4.2, place?.relatedPlaces?.first()?.rating ?: 0.0, 0.0)
+        assertEquals("HEL", place?.airportDetails?.code)
+        assertEquals(listOf("Arrivals", "Departures"), place?.airportDetails?.terminals?.single()?.levels)
+        assertEquals(listOf("Finnair", "SAS"), place?.airportDetails?.airlines)
+        assertEquals(listOf("Gates", "Food"), place?.airportDetails?.browseCategories?.map { it.label })
+        assertEquals(listOf("Coffee Shops"), place?.airportDetails?.browseCategories?.last()?.subcategories)
+        assertEquals(2, place?.airportDetails?.accessPoints?.size)
+        assertEquals(55.0, place?.airportDetails?.elevationMeters ?: 0.0, 0.0)
     }
 
     @Test fun coverageParserPreservesUnsignedIdsCoordinatesAndSixCalibrations() {

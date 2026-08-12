@@ -1,5 +1,13 @@
 # Changelog
 
+- 2026-08-12 — Airport and large-venue place cards now retain Apple's complete categorized photo albums with
+  captions/provider actions, expandable attributed About copy, Amenity V2 labels/icons, and rich clickable “Also at
+  This Location” cards with ratings and a full list. Airport Directory exposes terminals, levels, airlines, and the
+  venue's Gates/Bag Claims/Food/Drinks/Shops/Restrooms browse categories in native trays. Apple venue bounds frame the
+  selected airport without route-camera takeover, while walking/cycling/driving directions use the nearest compatible
+  Apple road-access point. VersionCode 10 / versionName `0.11-airport-place-parity`; canonical APK is 27,374,542 bytes
+  with SHA-256 `24b51845c41d5db87f5e237469db99d268d9160058dfc5015ea6751fe639aa83`.
+
 - 2026-08-12 — Added the canonical v0.10 debug APK and the complete v0.9 UI-verification evidence set to Git:
   16 screenshots, the served and independently downloaded APK copies, and the captured HTTP response headers. This
   tracking-only release changes no application source or runtime behavior.

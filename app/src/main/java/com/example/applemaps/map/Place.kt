@@ -35,6 +35,46 @@ data class Review(
 
 data class PlaceAttribution(val text: String, val uri: String? = null)
 
+data class PlacePhoto(
+    val url: String,
+    val caption: String? = null,
+    val author: String? = null,
+    val provider: String? = null,
+    val actionUri: String? = null,
+)
+
+data class PlacePhotoAlbum(val title: String, val photos: List<PlacePhoto>)
+data class PlaceAmenity(val name: String, val symbolName: String? = null)
+
+data class RelatedPlace(
+    val id: String,
+    val name: String,
+    val rating: Double? = null,
+    val ratingMaximum: Double? = null,
+    val ratingCount: Int? = null,
+    val ratingSource: String? = null,
+)
+
+data class PlaceBounds(
+    val southLat: Double,
+    val westLon: Double,
+    val northLat: Double,
+    val eastLon: Double,
+)
+
+data class VenueTerminal(val name: String, val levels: List<String>)
+data class AirportBrowseCategory(val label: String, val query: String, val subcategories: List<String> = emptyList())
+data class PlaceAccessPoint(val lat: Double, val lon: Double, val walking: Boolean, val driving: Boolean)
+data class AirportDetails(
+    val code: String? = null,
+    val terminals: List<VenueTerminal> = emptyList(),
+    val airlines: List<String> = emptyList(),
+    val browseCategories: List<AirportBrowseCategory> = emptyList(),
+    val bounds: PlaceBounds? = null,
+    val accessPoints: List<PlaceAccessPoint> = emptyList(),
+    val elevationMeters: Double? = null,
+)
+
 /** A place shown in the sheet. Fields mirror the measured Apple card (title/category·locality/details). */
 data class Place(
     val name: String,
@@ -55,16 +95,36 @@ data class Place(
     val ratingSource: String? = null,
     val priceLevel: Int? = null,   // 1–4 → COST ribbon ($ .. $$$$); null = unknown (Google price_level 0 → null)
     val description: String? = null,
+    val aboutAttribution: PlaceAttribution? = null,
     val amenities: List<String> = emptyList(),
+    val amenityDetails: List<PlaceAmenity> = emptyList(),
     val photoLabels: List<String> = emptyList(),
     val photoUrls: List<String> = emptyList(),   // resolved provider image URIs shown by Coil
     val photoAttributionUrls: List<String?> = emptyList(),
+    val photoAlbums: List<PlacePhotoAlbum> = emptyList(),
     val reviews: List<Review> = emptyList(),
     val alsoHere: List<String> = emptyList(),
+    val relatedPlaces: List<RelatedPlace> = emptyList(),
+    val airportDetails: AirportDetails? = null,
     val dataAttributions: List<PlaceAttribution> = emptyList(),
 ) {
     val coords: String
         get() = "%.5f° %s, %.5f° %s".format(abs(lat), if (lat >= 0) "N" else "S", abs(lon), if (lon >= 0) "E" else "W")
+}
+
+/** Returns the nearest mode-compatible venue entrance, falling back to the place center. */
+internal fun Place.routeCoordinate(mode: String, origin: MapCoordinate): MapCoordinate {
+    val points = airportDetails?.accessPoints.orEmpty().filter {
+        if (mode.equals("Drive", ignoreCase = true)) it.driving else it.walking
+    }
+    val nearest = points.minByOrNull { point ->
+        val latScale = 111_320.0
+        val lonScale = latScale * kotlin.math.cos(Math.toRadians((origin.latitude + point.lat) / 2.0))
+        val y = (point.lat - origin.latitude) * latScale
+        val x = (point.lon - origin.longitude) * lonScale
+        x * x + y * y
+    }
+    return nearest?.let { MapCoordinate(it.lat, it.lon) } ?: MapCoordinate(lat, lon)
 }
 
 /** One picture reference inside a sequence link (id + where it is). */

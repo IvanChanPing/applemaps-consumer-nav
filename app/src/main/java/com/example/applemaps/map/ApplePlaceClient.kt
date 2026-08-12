@@ -38,6 +38,7 @@ internal object ApplePlaceClient {
         "HAS_STREET_PARKING" to "Street Parking",
         "GENDER_NEUTRAL_RESTROOM" to "Gender-Neutral Restrooms",
         "GOOD_FOR_GROUPS" to "Good for Groups",
+        "TAKES_RESERVATIONS" to "Reservations",
     )
 
     /**
@@ -153,19 +154,19 @@ internal object ApplePlaceClient {
             ?.takeIf(String::isNotBlank) ?: "UTC"
         val hours = parseHours(components["COMPONENT_TYPE_BUSINESS_HOURS"], timezone)
 
-        val amenities = parseAmenities(components["COMPONENT_TYPE_AMENITIES"])
+        val amenityDetails = parseAmenities(components["COMPONENT_TYPE_AMENITIES"])
         val reviews = parseReviews(components["COMPONENT_TYPE_REVIEW"])
         val categorizedPhotos = parseCategorizedPhotos(components["COMPONENT_TYPE_CATEGORIZED_PHOTOS"])
-        val photos = categorizedPhotos?.urls ?: parsePhotos(rawPlace.toString())
+        val photos = categorizedPhotos?.albums?.mapNotNull { it.photos.firstOrNull()?.url }
+            ?: parsePhotos(rawPlace.toString())
         val addressObject = componentValue("COMPONENT_TYPE_ADDRESS_OBJECT")?.optJSONObject("addressObject")
         val addressLines = addressObject?.optJSONArray("formattedAddressLines")
         val address = if (addressLines != null) (0 until addressLines.length())
             .mapNotNull { addressLines.optString(it).takeIf(String::isNotBlank) }.joinToString(", ")
         else ""
-        val about = firstString(components["COMPONENT_TYPE_ABOUT"]?.opt("value"))
-            ?: componentValue("COMPONENT_TYPE_TEXT_BLOCK")?.optJSONObject("textBlock")
-                ?.let { firstString(it.opt("text")) }
-            ?: firstString(components["COMPONENT_TYPE_RESULT_SNIPPET"]?.opt("value"))
+        val about = parseAbout(components, ::componentValue)
+        val relatedPlaces = parseRelatedPlaces(components["COMPONENT_TYPE_TEMPLATE_PLACE"])
+        val airportDetails = parseAirportDetails(components)
 
         return Place(
             name = firstString(entity.opt("name")) ?: query,
@@ -185,33 +186,48 @@ internal object ApplePlaceClient {
             ratingCount = rating?.optInt("numRatingsUsedForScore", 0)?.takeIf { it > 0 },
             ratingCountFormatted = rating?.optString("ratingsFormatted")?.ifBlank { null },
             ratingSource = ratingComponent?.optJSONObject("attribution")?.optString("displayName")?.ifBlank { null },
-            description = about,
-            amenities = amenities,
-            photoLabels = categorizedPhotos?.labels.orEmpty(),
+            description = about.first,
+            aboutAttribution = about.second,
+            amenities = amenityDetails.map(PlaceAmenity::name),
+            amenityDetails = amenityDetails,
+            photoLabels = categorizedPhotos?.albums?.map(PlacePhotoAlbum::title).orEmpty(),
             photoUrls = photos,
+            photoAttributionUrls = categorizedPhotos?.albums?.map { it.photos.firstOrNull()?.actionUri }.orEmpty(),
+            photoAlbums = categorizedPhotos?.albums.orEmpty(),
             reviews = reviews,
-            alsoHere = parseAlsoHere(components["COMPONENT_TYPE_TEMPLATE_PLACE"]),
+            alsoHere = relatedPlaces.map(RelatedPlace::name),
+            relatedPlaces = relatedPlaces,
+            airportDetails = airportDetails,
         )
     }
 
-    private data class CategorizedPhotos(val urls: List<String>, val labels: List<String>)
+    private data class CategorizedPhotos(val albums: List<PlacePhotoAlbum>)
 
     /** Maps Apple's airport/venue photo categories to the native tray's aligned cover-card model. */
     private fun parseCategorizedPhotos(component: JSONObject?): CategorizedPhotos? {
         val values = component?.optJSONArray("value") ?: return null
-        val urls = mutableListOf<String>()
-        val labels = mutableListOf<String>()
+        val albums = mutableListOf<PlacePhotoAlbum>()
         for (valueIndex in 0 until values.length()) {
             val category = values.optJSONObject(valueIndex)?.optJSONObject("categorizedPhotos") ?: continue
             val label = firstString(category.opt("categoryName")) ?: continue
             val photos = category.optJSONArray("photo") ?: continue
-            val cover = (0 until photos.length()).asSequence()
-                .mapNotNull { photoUrl(photos.optJSONObject(it)) }.firstOrNull() ?: continue
-            urls += cover
-            labels += label
+            val parsed = (0 until minOf(10, photos.length())).mapNotNull { index ->
+                val raw = photos.optJSONObject(index) ?: return@mapNotNull null
+                val url = photoUrl(raw) ?: return@mapNotNull null
+                val attribution = raw.optJSONObject("attribution")
+                PlacePhoto(
+                    url = url,
+                    caption = raw.optString("caption").ifBlank { null },
+                    author = raw.optString("author").ifBlank { null },
+                    provider = attribution?.optString("displayName")?.ifBlank { null },
+                    actionUri = raw.optString("viewPhotoActionUrl").ifBlank {
+                        attribution?.optString("baseActionUrl").orEmpty()
+                    }.ifBlank { null },
+                )
+            }
+            if (parsed.isNotEmpty()) albums += PlacePhotoAlbum(label, parsed)
         }
-        if (urls.isEmpty()) return null
-        return CategorizedPhotos(urls, labels)
+        return CategorizedPhotos(albums).takeIf { albums.isNotEmpty() }
     }
 
     private fun photoUrl(value: JSONObject?): String? {
@@ -227,17 +243,122 @@ internal object ApplePlaceClient {
         return selected.replace("{w}", "1200").replace("{h}", "1200").replace("{f}", "jpg")
     }
 
-    private fun parseAlsoHere(component: JSONObject?): List<String> {
+    private fun parseRelatedPlaces(component: JSONObject?): List<RelatedPlace> {
         val values = component?.optJSONArray("value") ?: return emptyList()
-        val names = linkedSetOf<String>()
+        val places = linkedMapOf<String, RelatedPlace>()
         for (valueIndex in 0 until values.length()) {
             val templates = values.optJSONObject(valueIndex)?.optJSONObject("templatePlace")
                 ?.optJSONArray("templateData") ?: continue
             for (templateIndex in 0 until templates.length()) {
-                firstString(templates.optJSONObject(templateIndex)?.opt("title"))?.let(names::add)
+                val template = templates.optJSONObject(templateIndex) ?: continue
+                val name = firstString(template.opt("title")) ?: continue
+                val muid = template.optJSONObject("mapsId")?.optJSONObject("shardedId")
+                    ?.optString("muid")?.takeIf { it.matches(Regex("[0-9]{1,20}")) } ?: continue
+                val id = muid.toULongOrNull()?.toString(16)?.uppercase(Locale.US)?.let { "I$it" } ?: continue
+                val ratingData = template.optJSONObject("footer")?.optJSONObject("ratingData")
+                val rating = ratingData?.optJSONArray("rating")?.optJSONObject(0)
+                places.putIfAbsent(
+                    id,
+                    RelatedPlace(
+                        id = id,
+                        name = name,
+                        rating = rating?.optDouble("score", Double.NaN)?.takeIf(Double::isFinite),
+                        ratingMaximum = rating?.optDouble("maxScore", Double.NaN)?.takeIf(Double::isFinite),
+                        ratingCount = rating?.optInt("numRatingsUsedForScore", 0)?.takeIf { it > 0 },
+                        ratingSource = ratingData?.optString("vendorName")?.ifBlank { null },
+                    ),
+                )
             }
         }
-        return names.take(12)
+        return places.values.toList()
+    }
+
+    private fun parseAbout(
+        components: Map<String, JSONObject>,
+        componentValue: (String) -> JSONObject?,
+    ): Pair<String?, PlaceAttribution?> {
+        val block = componentValue("COMPONENT_TYPE_TEXT_BLOCK")?.optJSONObject("textBlock")
+        val text = firstString(components["COMPONENT_TYPE_ABOUT"]?.opt("value"))
+            ?: block?.let { firstString(it.opt("text")) }
+            ?: firstString(components["COMPONENT_TYPE_RESULT_SNIPPET"]?.opt("value"))
+        val title = block?.let { firstString(it.opt("title")) }
+        val uri = block?.optString("attributionUrl")?.ifBlank { null }
+        return text to title?.let { PlaceAttribution(it, uri) }
+    }
+
+    private fun parseAirportDetails(components: Map<String, JSONObject>): AirportDetails? {
+        fun first(type: String, key: String): JSONObject? = components[type]
+            ?.optJSONArray("value")?.optJSONObject(0)?.optJSONObject(key)
+
+        val boundsJson = first("COMPONENT_TYPE_BOUNDS", "bounds")?.optJSONObject("mapRegion")
+        val bounds = boundsJson?.let {
+            PlaceBounds(
+                it.optDouble("southLat"), it.optDouble("westLng"),
+                it.optDouble("northLat"), it.optDouble("eastLng"),
+            ).takeIf { b -> listOf(b.southLat, b.westLon, b.northLat, b.eastLon).all(Double::isFinite) }
+        }
+
+        val venue = first("COMPONENT_TYPE_VENUE_INFO", "venueInfo")
+        val featureVenue = venue?.optJSONObject("featureValue")?.optJSONObject("featureVenue")
+        val levelNames = linkedMapOf<String, String>()
+        featureVenue?.optJSONArray("level")?.let { levels ->
+            for (index in 0 until levels.length()) {
+                val level = levels.optJSONObject(index) ?: continue
+                val id = level.optString("levelId")
+                if (id.isBlank()) continue
+                firstString(level.optJSONObject("label")?.opt("name"))?.let { levelNames[id] = it }
+            }
+        }
+        val terminals = mutableListOf<VenueTerminal>()
+        featureVenue?.optJSONArray("building")?.let { buildings ->
+            for (index in 0 until buildings.length()) {
+                val building = buildings.optJSONObject(index) ?: continue
+                val name = firstString(building.optJSONObject("label")?.opt("name")) ?: continue
+                val ids = building.optJSONArray("levelId")
+                val levels = if (ids == null) emptyList() else (0 until ids.length())
+                    .mapNotNull { levelNames[ids.optString(it)] }.distinct()
+                terminals += VenueTerminal(name, levels)
+            }
+        }
+        val airlines = venue?.optJSONObject("itemList")?.optJSONArray("item")?.let { items ->
+            (0 until items.length()).mapNotNull { items.optString(it).takeIf(String::isNotBlank) }
+        }.orEmpty()
+        val code = featureVenue?.optJSONObject("venueContainer")?.optJSONObject("label")
+            ?.optString("nameShort")?.ifBlank { null }
+
+        val browse = first("COMPONENT_TYPE_BROWSE_CATEGORIES", "browseCategories")
+            ?.optJSONArray("browseCategory")
+        val categories = if (browse == null) emptyList() else (0 until browse.length()).mapNotNull { index ->
+            val item = browse.optJSONObject(index) ?: return@mapNotNull null
+            val label = item.optString("displayString").ifBlank { return@mapNotNull null }
+            val query = item.optString("popularDisplayToken").ifBlank { label }
+            val sub = item.optJSONArray("subCategory")?.let { array ->
+                (0 until array.length()).mapNotNull { array.optJSONObject(it)?.optString("displayString")?.takeIf(String::isNotBlank) }
+            }.orEmpty()
+            AirportBrowseCategory(label, query, sub)
+        }
+
+        val access = first("COMPONENT_TYPE_ROAD_ACCESS_INFO", "accessInfo")
+            ?.optJSONArray("roadAccessPoint")
+        val accessPoints = if (access == null) emptyList() else (0 until access.length()).mapNotNull { index ->
+            val point = access.optJSONObject(index) ?: return@mapNotNull null
+            val location = point.optJSONObject("location") ?: return@mapNotNull null
+            val lat = location.optDouble("lat", Double.NaN)
+            val lon = location.optDouble("lng", Double.NaN)
+            if (!lat.isFinite() || !lon.isFinite()) return@mapNotNull null
+            PlaceAccessPoint(
+                lat = lat,
+                lon = lon,
+                walking = point.optString("walkingDirection").isNotBlank(),
+                driving = point.optString("drivingDirection").isNotBlank(),
+            )
+        }
+        val elevation = first("COMPONENT_TYPE_FACTOID", "factoid")
+            ?.takeIf { it.optString("entryType") == "ELEVATION" }
+            ?.optDouble("number", Double.NaN)?.takeIf(Double::isFinite)
+
+        return AirportDetails(code, terminals, airlines, categories, bounds, accessPoints, elevation)
+            .takeIf { code != null || terminals.isNotEmpty() || categories.isNotEmpty() || accessPoints.isNotEmpty() }
     }
 
     private data class ParsedHours(val today: String?, val open: Boolean?, val nextTransition: String?)
@@ -289,18 +410,29 @@ internal object ApplePlaceClient {
         return String.format(Locale.US, "%d:%02d %s", hour12, minute, suffix)
     }
 
-    private fun parseAmenities(component: JSONObject?): List<String> {
-        val amenities = component?.optJSONArray("value")?.optJSONObject(0)
-            ?.optJSONObject("amenities")?.optJSONArray("amenity") ?: return emptyList()
-        val result = linkedSetOf<String>()
-        for (index in 0 until amenities.length()) {
-            val amenity = amenities.optJSONObject(index) ?: continue
-            if (!amenity.optBoolean("amenityPresent")) continue
-            val type = amenity.optString("amenityType").takeIf(String::isNotBlank) ?: continue
-            result += amenityNames[type] ?: type.lowercase().split('_')
-                .joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
+    private fun parseAmenities(component: JSONObject?): List<PlaceAmenity> {
+        val container = component?.optJSONArray("value")?.optJSONObject(0)
+            ?.optJSONObject("amenities") ?: return emptyList()
+        val result = linkedMapOf<String, PlaceAmenity>()
+        container.optJSONArray("amenityV2")?.let { amenities ->
+            for (index in 0 until amenities.length()) {
+                val amenity = amenities.optJSONObject(index) ?: continue
+                if (!amenity.optBoolean("amenityPresent")) continue
+                val name = firstString(amenity.opt("name")) ?: continue
+                result[name] = PlaceAmenity(name, amenity.optString("symbolImageName").ifBlank { null })
+            }
         }
-        return result.toList()
+        container.optJSONArray("amenity")?.let { amenities ->
+            for (index in 0 until amenities.length()) {
+                val amenity = amenities.optJSONObject(index) ?: continue
+                if (!amenity.optBoolean("amenityPresent")) continue
+                val type = amenity.optString("amenityType").takeIf(String::isNotBlank) ?: continue
+                val name = amenityNames[type] ?: type.lowercase().split('_')
+                    .joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
+                result.putIfAbsent(name, PlaceAmenity(name))
+            }
+        }
+        return result.values.toList()
     }
 
     private fun parseReviews(component: JSONObject?): List<Review> {
