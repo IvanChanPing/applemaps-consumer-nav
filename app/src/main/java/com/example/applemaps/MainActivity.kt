@@ -17,6 +17,7 @@ import com.example.applemaps.ui.theme.AppleMapsTheme
  * Host activity for the Apple-Maps-web reconstruction. Single-Activity Compose app; the whole UI
  * lives in [AppleMapsScreen].
  */
+@dagger.hilt.android.AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     private lateinit var mapController: ConsumerMapController
 

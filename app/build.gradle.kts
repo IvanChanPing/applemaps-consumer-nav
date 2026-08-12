@@ -5,6 +5,8 @@ plugins {
     // AGP 9 has built-in Kotlin — kotlin.android is removed; only the Compose compiler plugin is applied.
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.devtools.ksp")
+    id("com.google.dagger.hilt.android")
 }
 
 android {
@@ -13,10 +15,10 @@ android {
 
     defaultConfig {
         applicationId = "com.example.applemaps.consumernav"
-        minSdk = 26
+        minSdk = 29
         targetSdk = 36
-        versionCode = 11
-        versionName = "0.12-consumer-browse-and-directions"
+        versionCode = 12
+        versionName = "0.13-vela-navigation-screen"
         // On-device Google Routes API key (route planning). Supply via `-PROUTES_API_KEY=...` or gradle.properties.
         buildConfigField("String", "ROUTES_API_KEY", "\"${project.findProperty("ROUTES_API_KEY") ?: ""}\"")
         // Google Places API key (place details + photos). Falls back to ROUTES_API_KEY so one key with both APIs enabled works.
@@ -43,6 +45,9 @@ android {
     }
 
     lint {
+        // AGP 9.2 lint crashes in its Kotlin analyzer on unchanged Vela sources before issue
+        // filtering. Compile/assembly still cover both Vela modules; lint remains scoped here.
+        checkDependencies = false
         // Ferrostar packages notification code for its optional ForegroundServiceManager. NavEngine passes
         // that manager as null, so this app has no call path to the flagged notification operation.
         disable += "NotificationPermission"
@@ -60,6 +65,9 @@ android {
 }
 
 dependencies {
+    implementation(project(":vela-app-runtime"))
+    implementation("com.google.dagger:hilt-android:2.60.1")
+    ksp("com.google.dagger:hilt-android-compiler:2.60.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
     val composeBom = platform("androidx.compose:compose-bom:2025.12.01")
     implementation(composeBom)

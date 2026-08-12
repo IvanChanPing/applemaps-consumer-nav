@@ -171,7 +171,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     val stopLabels = remember { mutableStateOf<List<String>>(emptyList()) }     // labels retained beside route waypoints
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val navEngine = remember { com.example.applemaps.nav.NavEngine(context) }   // Ferrostar TBT core (Option A)
     var navInstruction by remember { mutableStateOf<String?>(null) }             // debug: current maneuver text
     var navLanes by remember { mutableStateOf<List<uniffi.ferrostar.LaneInfo>>(emptyList()) }   // lane guidance for the upcoming maneuver
     val density = androidx.compose.ui.platform.LocalDensity.current
@@ -238,7 +237,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val c = mapController.center()
         searchResults = PlaceRepository.searchPlaces(searchQuery, c.latitude, c.longitude)
     }
-    DisposableEffect(Unit) { navEngine.onStart(); onDispose { navEngine.onDestroy() } }   // TTS lifecycle
     var locationGranted by remember {
         mutableStateOf(androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.ACCESS_FINE_LOCATION) == android.content.pm.PackageManager.PERMISSION_GRANTED)
     }
@@ -636,31 +634,23 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             RouteLayer.clear(mapController)
             cardPlace?.let(mapController::showConsumerPlace)
         }
-        // GO keeps the consumer Apple route alive. The native sheets hide while the same WebView receives progress,
-        // navigation-arrow, heading-follow, gesture-pause, recenter, and compass updates beneath NavOverlay.
+        // GO backgrounds this Apple Activity and hands the destination to Vela's full navigation screen.
+        // Vela owns its route, map, voice, reroutes, and Exit; finishing it reveals this unchanged planner.
         val startNav: () -> Unit = {
             val rs = directionsRoutes
             if (rs != null && rs.isNotEmpty()) {
                 val selectedIndex = selectedRoute.coerceIn(0, rs.lastIndex)
                 val route = rs[selectedIndex].points
                 if (route.size >= 2) {
-                    scope.launch {
-                        directionsError = null
-                        val started = runCatching { navEngine.start(route.last(), osrmProfile(dirMode), stops.value, selectedIndex) }
-                            .onFailure { DiagLog.log("DIRECTIONS", "event=nav_start_error", "type=${it.javaClass.simpleName}") }
-                            .getOrDefault(false)
-                        if (started) {
-                            val ordered = listOf(rs[selectedIndex]) + rs.filterIndexed { i, _ -> i != selectedIndex }
-                            RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false, labels = routeLabels(ordered))
-                            navMode = true
-                            navFollowing = true   // each nav session starts following the puck
-                            navProgress = 0f
-                            DiagLog.log("DIRECTIONS", "event=nav_started", "route=$selectedIndex", "stops=${stops.value.size}")
-                        } else {
-                            directionsError = "Navigation needs a current GPS fix before GO can start."
-                            DiagLog.log("DIRECTIONS", "event=nav_start_failed", "route=$selectedIndex")
-                        }
-                    }
+                    directionsError = null
+                    context.startActivity(
+                        com.example.applemaps.VelaNavigationActivity.intent(
+                            context = context,
+                            destination = route.last(),
+                            label = cardPlace?.name.orEmpty(),
+                            mode = dirMode,
+                        ),
+                    )
                 }
             }
         }
@@ -941,35 +931,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             }
         }
 
-        // TURN-BY-TURN state collector: per FerrostarCore.state, set the follow TARGET + banner + route trim.
-        LaunchedEffect(navMode) {
-            if (!navMode) {
-                navInstruction = null
-                mapController.clearNavigation()
-                navEngine.stop()
-                navTgt = null; navTotalDist = null; navProgress = 0f
-                return@LaunchedEffect
-            }
-            navEngine.state.collect {
-                val snapped = navEngine.snappedLocation ?: return@collect
-                navTgt = snapped
-                navEngine.bearing?.let { navTgtBrg = it }
-                navInstruction = navEngine.currentInstruction?.primaryContent?.text
-                navLanes = navEngine.currentLanes
-                navDistToNext = navEngine.distanceToNextManeuver
-                navDurRemaining = navEngine.durationRemaining
-                navDistRemaining = navEngine.distanceRemaining
-                navSpeed = navEngine.currentSpeedMps
-                // vanishing route line: trim the traveled part behind the puck (progress = 1 − remaining/total).
-                navEngine.distanceRemaining?.let { remain ->
-                    if (navTotalDist == null || remain > navTotalDist!!) navTotalDist = remain
-                    val t = (1.0 - remain / (navTotalDist ?: remain)).coerceIn(0.0, 1.0)
-                    navProgress = t.toFloat()
-                    RouteLayer.setProgress(mapController, navProgress)
-                }
-            }
-        }
-
         // TURN-BY-TURN SMOOTH follow: ease the camera + arrow toward each new target at display rate. The elapsed-
         // time fraction preserves the old 60Hz curve on high-refresh screens. Once the pose converges, duplicate
         // consumer-renderer route/puck/camera mutations pause until the target or follow mode changes.
@@ -1035,12 +996,9 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 distanceRemaining = navDistRemaining,
                 speedMps = navSpeed,
                 muted = navMuted,
-                onMute = { navMuted = !navMuted; navEngine.setMuted(navMuted) },
+                onMute = { navMuted = !navMuted },
                 onRecenter = {
                     navFollowing = true   // resume auto-follow after the user panned away
-                    navEngine.snappedLocation?.let { location ->
-                        mapController.setNavigationPose(location, navEngine.bearing ?: navTgtBrg, follow = true)
-                    }
                 },
                 onExit = {
                     navMode = false

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-08-12 — 0.13 Vela navigation screen
+
+- GO now backgrounds the Apple WebView Activity and opens a dedicated Vela navigation Activity.
+- Vela's pinned core, map UI, routing, rerouting, voice, downloadable voices, service, and Exit behavior are compiled from an immutable upstream snapshot without source edits.
+- Vela's legacy embedded protobuf runtime is build-time relocated with its OsmAnd callers so Apple Look Around can retain protobuf-javalite 3.22.3 without duplicate or incompatible classes.
+- Vela's navigation and data-sync foreground services, TTS engine visibility, notification reopen path, and large-heap voice runtime requirements are declared by the host manifest.
+- Ending guidance or arriving finishes the Vela Activity and resumes the preserved Apple planner/map underneath.
+- The former Ferrostar navigation implementation remains in source but has no reachable production caller.
+- Combined verification passed 42 unit tests, host Android lint, and debug assembly. Canonical local APK: 237,605,056 bytes; SHA-256 `33e752ae7aa735ef376aa92850943b0fca4cccfa789e2de4072853e13ac680dd`.
+
 - 2026-08-12 — Main-page Find Nearby and Guide trays now install up to 20 matching blue MapKit markers on the
   already-mounted Apple map and clear them on close, selection, error, or replacement without refreshing the page.
   **Directions** now opens Apple's official unified consumer route URL with the app's origin, destination, mode,

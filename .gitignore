@@ -1,4 +1,6 @@
 .gradle/
+vela-core/libs/*.jar
+vela-app-runtime/libs/*.aar
 build/
 app/build/
 local.properties

@@ -15,6 +15,9 @@ dependencyResolutionManagement {
         mavenCentral()
         maven { setUrl("https://www.jitpack.io") }
     }
+    versionCatalogs {
+        create("velaLibs") { from(files("vendor/Vela/gradle/libs.versions.toml")) }
+    }
 }
 
-include(":app")
+include(":app", ":vela-core", ":vela-app-runtime")
