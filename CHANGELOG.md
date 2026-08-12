@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-08-12 — Added a GitHub Actions workflow that runs the documented debug verification/build command on every
+  push to `main` or manual dispatch and publishes `applemaps-consumer-nav-debug.apk` directly to GitHub Releases.
+
 - 2026-08-11 — Prepared the complete project for its initial private GitHub publication. Local copy-verification
   manifests are excluded because they contain machine-specific absolute paths and are not application inputs; source,
   tests, Gradle wrapper, documentation, and the canonical debug APK remain included.

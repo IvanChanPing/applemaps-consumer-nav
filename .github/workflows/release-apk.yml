@@ -1,0 +1,50 @@
+# Builds the installable debug APK and publishes it as a GitHub Release asset.
+# Runs automatically for main and can also be started from the Actions page.
+name: Build and release APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build APK
+        run: ./gradlew --no-daemon testDebugUnitTest lintDebug assembleDebug
+
+      - name: Stage APK
+        run: install -Dm644 app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/applemaps-consumer-nav-debug.apk"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${GITHUB_RUN_NUMBER}" \
+            "$RUNNER_TEMP/applemaps-consumer-nav-debug.apk#Apple Maps Consumer Navigation APK" \
+            --target "$GITHUB_SHA" \
+            --title "APK build ${GITHUB_RUN_NUMBER}" \
+            --notes "Automated APK build from ${GITHUB_SHA}." \
+            --latest
