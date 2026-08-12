@@ -1,0 +1,764 @@
+package app.vela.core.nav
+
+import android.os.SystemClock
+import app.vela.core.data.MapDataSource
+import app.vela.core.feedback.Haptics
+import app.vela.core.model.LatLng
+import app.vela.core.model.Route
+import app.vela.core.model.TravelMode
+import app.vela.core.model.distanceTo
+import app.vela.core.voice.VoiceGuide
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/**
+ * The single owner of an in-progress navigation. Held as a singleton so the
+ * foreground [service][app.vela.core] (which feeds it location with the screen
+ * off) and the UI ViewModel (which observes [state]) share exactly one nav loop
+ * — no double voice prompts, no divergent state.
+ *
+ * Beyond turn-by-turn it runs a **live re-check**: every [RECHECK_INTERVAL_MS]
+ * while underway it re-queries directions from the current position and, if the
+ * fresh traffic-aware ETA beats the remaining time by a real margin, surfaces a
+ * faster route the user can accept. That's the "is there a better way right now"
+ * behaviour traffic apps live on.
+ */
+@Singleton
+class NavSession @Inject constructor(
+    private val dataSource: MapDataSource,
+    private val voice: VoiceGuide,
+    private val haptics: Haptics,
+    private val diag: app.vela.core.diag.DiagLog,
+) {
+    data class State(
+        val navigating: Boolean = false,
+        val arrived: Boolean = false,
+        val route: Route? = null,
+        val nav: NavState = NavState(),
+        val maneuverText: String = "",
+        val remainingDistance: Double = 0.0,
+        val remainingDuration: Double = 0.0,
+        val fasterRoute: Route? = null,
+        val fasterSavingSeconds: Double = 0.0,
+        // Trip summary, populated on arrival (and carried for the arrival card).
+        val destinationLabel: String = "",
+        // The destination's address line, when it adds anything beyond [destinationLabel]
+        // (see [destinationDisplay]) — shown on the ARRIVE step in the banner + step list.
+        val destinationAddress: String = "",
+        val tripDistanceMeters: Double = 0.0,
+        val tripElapsedSeconds: Double = 0.0,
+    )
+
+    private val _state = MutableStateFlow(State())
+    val state: StateFlow<State> = _state.asStateFlow()
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var destination: LatLng? = null
+    private var lastRecheckMs = 0L
+    // Fast-heal pacing for a DEGRADED route (abbreviated steps / no live traffic): reference of
+    // the route the counter was armed for + how many short-interval rechecks it has spent.
+    private var degradedRouteRef: Route? = null
+    private var degradedFastRechecks = 0
+    private var tripStartMs = 0L
+    private var recheckJob: Job? = null
+    // Reroute discipline: SINGLE-FLIGHT (two racing fetches used to swap the route twice, last
+    // writer wins), a COOLDOWN between adoptions (no "Rerouting… Rerouting…" every 4 s while GPS
+    // is biased toward a parallel road), the voice line rate-limited separately (a silent retry
+    // shouldn't re-announce), and a GENERATION stamp so a fetch that completes after stop()/a new
+    // start() can't resurrect the previous destination's route into the fresh session.
+    private var rerouteJob: Job? = null
+    // @Volatile: written on the Default dispatcher (reroute coroutine) / caller thread and read
+    // on the location thread — a stale read would defeat the cooldown or the generation guard.
+    @Volatile private var lastRerouteAdoptMs = 0L
+    /** WHY the current route was adopted - stamped at every swap site, read by the trip recorder
+     *  so the file distinguishes a wrong-turn reroute from a chosen faster route or a silent
+     *  heal: "start", "reroute", "faster", "heal", "stop-added". */
+    @Volatile var lastSwapReason: String = "start"
+    @Volatile private var lastRerouteSpokeMs = 0L
+    @Volatile private var sessionGen = 0
+    // A FAILED reroute must clear the engine's offRoute latch so it retries — but writing nav
+    // state from the reroute coroutine races the in-flight onLocation frame (whose route-identity
+    // guard can't catch it: a failed reroute doesn't swap the route). Instead the location
+    // thread itself consumes this flag at the top of its next frame.
+    private val pendingLatchClear = java.util.concurrent.atomic.AtomicBoolean(false)
+    // Faster-route offer memory: don't re-offer (and re-speak) the candidate the user just
+    // dismissed every recheck; a similar route must beat the dismissed saving by a real margin.
+    private var dismissedFasterKey: Long = 0L
+    private var dismissedFasterSaving = 0.0
+    // Live ETA calibration for the CURRENT course. Each recheck fetches a fresh traffic-aware
+    // route from the live position anyway; when that candidate follows the road we're already
+    // driving, its ETA is the freshest read of the traffic ahead - so instead of discarding it
+    // (the shown ETA used to ride the traffic ratio captured at the LAST route fetch for the
+    // whole drive), the session keeps a multiplicative correction applied to every published
+    // remaining duration. Reset to 1.0 whenever the route itself is swapped (start / reroute /
+    // faster-route / replay) - a fresh route carries fresh traffic of its own. Volatile: written
+    // by the recheck coroutine, read on the location thread's publish path.
+    @Volatile private var etaScale = 1.0
+    // Replay hermeticity: a trip REPLAY must be deterministic — no live reroute fetches, no
+    // faster-route rechecks (a live fetch mid-replay swapped the route and the recorded fixes
+    // were then matched against a route the driver never drove: arrow on another street, the
+    // faster-route sheet popping up over a replay). Route swaps that happened in the REAL drive
+    // are recorded in the trip and played back via [replaySetRoute].
+    @Volatile var replayMode = false
+    // Settings -> Data & privacy -> "Live traffic re-checks". Each recheck sends the CURRENT
+    // position to Google (that's what makes a from-here candidate possible), which is a periodic
+    // in-drive location beacon on top of the origin already sent at start + on reroutes. Off =
+    // no periodic requests: no faster-route offers, no live ETA recalibration, no
+    // abbreviated-steps self-heal; reroutes still fire when off course (they're what nav IS).
+    @Volatile var liveRechecks = true
+    // Multi-stop: intermediate waypoints (in travel order), each with its along-route "pass mark" so we can
+    // announce "you've reached <stop>" as progress passes it, and reroute through the REMAINING ones.
+    // The whole plan (stops + marks + counter + the route the marks were measured on) is guarded by
+    // [stopLock] and swapped ATOMICALLY with a new route: reroute() runs on Dispatchers.Default while
+    // onLocation arrives on the location thread — without the lock (and the planRoute identity check in
+    // announceStopsPassed) a fix still measured against the OLD route could be compared to the NEW marks,
+    // firing every remaining cue at once and permanently dropping unvisited stops.
+    private val stopLock = Any()
+    private var mode: TravelMode = TravelMode.DRIVE
+    private var stops: List<NavStop> = emptyList()
+    private var stopMarks: List<Double?> = emptyList()
+    private var passedStops = 0
+    private var planRoute: Route? = null // the route [stopMarks] were computed against
+
+    /** An intermediate stop on a multi-stop trip. */
+    data class NavStop(val location: LatLng, val label: String)
+
+    /** Fold a light-ENRICHED copy of the current route in after nav has already started, so
+     *  START never waits on the Overpass traffic-signal fetch (that blocked nav start for up to
+     *  ~25 s, the server timeout, once light guidance became standard - user 2026-07-16). The
+     *  enriched route's polyline and maneuver POSITIONS are identical; only turn instruction TEXT
+     *  gains "Pass the light, then ...". So swapping planRoute (what the engine reads each fix) and
+     *  re-emitting the current step's text is safe and needs no re-anchor. No-op if we've stopped
+     *  or rerouted since (a different polyline = the clauses are for a route we're no longer on).
+     *  Deliberately does NOT touch _state.route, so the trip recorder doesn't log a phantom swap. */
+    fun applyEnrichedRoute(r: Route) {
+        synchronized(stopLock) {
+            val cur = planRoute ?: return
+            if (!_state.value.navigating || cur.polyline.size != r.polyline.size) return
+            planRoute = r
+        }
+        val idx = _state.value.nav.stepIndex
+        r.maneuvers.getOrNull(idx)?.instruction?.let { txt ->
+            _state.update { it.copy(maneuverText = txt) }
+        }
+    }
+
+    fun start(
+        route: Route,
+        destination: LatLng,
+        destinationLabel: String = "",
+        voiceEngine: String? = null,
+        stops: List<NavStop> = emptyList(),
+        mode: TravelMode = TravelMode.DRIVE,
+        destinationAddress: String = "",
+    ) {
+        this.destination = destination
+        this.mode = mode
+        sessionGen += 1               // orphan any in-flight reroute/recheck from a previous session
+        rerouteJob?.cancel()
+        pendingLatchClear.set(false)  // a stale clear from the previous session must not leak in
+        dismissedFasterKey = 0L
+        dismissedFasterSaving = 0.0
+        etaScale = 1.0
+        synchronized(stopLock) {
+            this.stops = stops
+            this.stopMarks = NavEngine.stopMarks(route, stops.map { it.location })
+            this.passedStops = 0
+            this.planRoute = route
+        }
+        voice.init(voiceEngine)
+        lastRecheckMs = SystemClock.elapsedRealtime()
+        tripStartMs = SystemClock.elapsedRealtime()
+        // Google's markup gives "Head toward F St"; add the cardinal so guidance
+        // says "Head east on F St" like Google's own voice.
+        val first = Heading.withCardinal(route.maneuvers.firstOrNull()?.instruction.orEmpty(), route.polyline)
+        _state.value = State(
+            navigating = true,
+            route = route,
+            // Seed the first turn's approach distance so the banner doesn't read "0 ft" (with
+            // every distance gate momentarily open) until the first fix — the DEPART maneuver's
+            // after-distance IS the distance to the first real turn.
+            nav = NavState(
+                distanceToNextManeuver = route.maneuvers.firstOrNull()?.distanceMeters ?: 0.0,
+                // Seed the trip totals so the ETA card reads the full route time/distance BEFORE the
+                // first fix — the engine overwrites these per-fix, but until then a 0 here rendered
+                // "<1 min / 10 ft" (worst while "Searching for GPS" holds off the first fix).
+                remainingDistance = route.distanceMeters,
+                remainingDuration = route.durationInTrafficSeconds ?: route.durationSeconds,
+            ),
+            maneuverText = first,
+            remainingDistance = route.distanceMeters,
+            remainingDuration = route.durationInTrafficSeconds ?: route.durationSeconds,
+            destinationLabel = destinationLabel,
+            destinationAddress = destinationAddress,
+            tripDistanceMeters = route.distanceMeters,
+        )
+        // speakOpener (not speak): briefly hold the opener until the first road's real romanized name
+        // has loaded from the map tiles, so a foreign street isn't read as an ICU skeleton at T=0 while
+        // the nav-zoom tiles are still loading (issue #184). Falls through to speaking after a short cap.
+        voice.speakOpener(app.vela.core.i18n.NavStringsRegistry.current().startNav(first))
+        diag.record(
+            "nav",
+            "start → ${destinationLabel.ifBlank { "destination" }} " +
+                "(${route.distanceMeters?.toInt()} m, ${route.maneuvers.size} steps, " +
+                "ETA ${route.durationInTrafficSeconds ?: route.durationSeconds}s)",
+        )
+    }
+
+    fun stop() {
+        sessionGen += 1 // orphan in-flight reroute/recheck — a late completion must not resurrect this session
+        recheckJob?.cancel()
+        rerouteJob?.cancel()
+        pendingLatchClear.set(false)
+        voice.stop()
+        destination = null
+        synchronized(stopLock) { stops = emptyList(); stopMarks = emptyList(); passedStops = 0; planRoute = null }
+        _state.value = State()
+    }
+
+    /** In-nav "search along route" pick: [stop] becomes the NEXT stop and the drive replans
+     *  through it from [loc]. Same fetch shape as [reroute] minus the deviation bookkeeping -
+     *  this reroute is USER-ORDERED, so no back-on-course discard, no cooldown, and it cancels
+     *  any in-flight deviation reroute (the user's plan supersedes it). The stop joins the plan
+     *  IMMEDIATELY (marks null until the new route lands), so even a failed fetch keeps it -
+     *  the next reroute/recheck routes through it once the network recovers. */
+    fun addStop(stop: NavStop, loc: LatLng) {
+        val dest = destination ?: return
+        val newRemaining = synchronized(stopLock) {
+            val remaining = listOf(stop) + stops.drop(passedStops)
+            stops = remaining
+            stopMarks = List(remaining.size) { null } // measured against no route yet: cues hold
+            passedStops = 0
+            remaining
+        }
+        voice.speak(app.vela.core.i18n.NavStringsRegistry.current().rerouting(), interrupt = true)
+        diag.record("nav", "add stop mid-nav → ${stop.label}")
+        val gen = sessionGen
+        rerouteJob?.cancel()
+        rerouteJob = scope.launch {
+            val r = runCatching { dataSource.directions(loc, dest, mode, newRemaining.map { it.location }) }
+                .getOrNull()?.firstOrNull()?.takeIf { it.reaches(dest) }
+            if (gen != sessionGen) return@launch
+            if (r == null) {
+                diag.record("nav", "add-stop reroute FAILED — stop kept, next reroute/recheck retries")
+                return@launch
+            }
+            val marks = NavEngine.stopMarks(r, newRemaining.map { it.location })
+            synchronized(stopLock) {
+                stops = newRemaining
+                stopMarks = marks
+                passedStops = 0
+                planRoute = r
+            }
+            lastSwapReason = "stop-added"
+            lastRecheckMs = SystemClock.elapsedRealtime()
+            lastRerouteAdoptMs = SystemClock.elapsedRealtime()
+            etaScale = 1.0 // the fresh route carries fresh traffic
+            _state.update {
+                it.copy(
+                    route = r,
+                    nav = NavState(
+                        distanceToNextManeuver = r.maneuvers.firstOrNull()?.distanceMeters ?: 0.0,
+                        remainingDistance = r.distanceMeters,
+                        remainingDuration = r.durationInTrafficSeconds ?: r.durationSeconds,
+                    ),
+                    maneuverText = r.maneuvers.firstOrNull()?.instruction.orEmpty(),
+                    remainingDistance = r.distanceMeters,
+                    remainingDuration = r.durationInTrafficSeconds ?: r.durationSeconds,
+                    fasterRoute = null,
+                )
+            }
+        }
+    }
+
+    fun onLocation(loc: LatLng, imperial: Boolean = false, speedMps: Double? = null, accuracyM: Double? = null, bearingDeg: Double? = null) {
+        val s = _state.value
+        val route = s.route ?: return
+        if (!s.navigating || s.arrived) return
+
+        // Consume a failed-reroute latch clear HERE, on the location thread, so the engine
+        // computes FROM the cleared state (4 more deviated fixes → natural retry) — clearing it
+        // from the reroute coroutine raced this frame's state write and could be silently undone.
+        val nav = if (pendingLatchClear.compareAndSet(true, false)) {
+            s.nav.copy(offRoute = false, offRouteHits = 0)
+        } else {
+            s.nav
+        }
+        // "Stationary" is mode-relative: 2 m/s is parked for a car but faster than most walkers.
+        val movingFloor = when (mode) {
+            TravelMode.WALK -> 0.6
+            TravelMode.BICYCLE -> 1.0
+            else -> 2.0
+        }
+        // Off-route corridor is accuracy-scaled AND mode-relative: it widens with the GPS fix's own
+        // reported accuracy (tight when clean, wide when noisy - like OsmAnd), and foot/bike ride
+        // tighter than driving because the path is narrow. See NavEngine.offRouteCorridor.
+        val offRoute = NavEngine.offRouteCorridor(mode, accuracyM)
+        val farOff = NavEngine.farOffDistance(mode, offRoute)
+        val (next, events) = NavEngine.update(route, nav, loc, imperial, speedMps, movingFloor, offRoute, farOff, bearingDeg)
+        val maneuver = route.maneuvers.getOrNull(next.stepIndex)
+        // Guard the write on route IDENTITY: a reroute/faster-route can swap route+NavState while
+        // this update was computing on the OLD route — writing `next` (old-route traveledM /
+        // stepIndex) onto the fresh route corrupted progress and could false-arrive right after
+        // a reroute. Same pattern announceStopsPassed already uses; drop the stale frame whole.
+        var applied = false
+        _state.update {
+            if (it.route !== route) it else {
+                applied = true
+                // The live-traffic ETA calibration (etaScale, set by the recheck) applies to the
+                // PUBLISHED remaining time only - the engine's own value stays pristine (it never
+                // reads it back; it recomputes from the route's step durations each fix).
+                val scaledNav = if (etaScale == 1.0) next else next.copy(remainingDuration = next.remainingDuration * etaScale)
+                it.copy(
+                    nav = scaledNav,
+                    maneuverText = maneuver?.instruction.orEmpty(),
+                    remainingDistance = next.remainingDistance,
+                    remainingDuration = scaledNav.remainingDuration,
+                )
+            }
+        }
+        if (!applied) return
+        events.forEach { ev ->
+            when (ev) {
+                is NavEvent.Speak -> voice.speak(ev.text, ev.interrupt)
+                is NavEvent.Haptic -> haptics.cue(ev.type, ev.approaching, mode)
+                NavEvent.Arrived -> {
+                    diag.record("nav", "arrived (trip ${((SystemClock.elapsedRealtime() - tripStartMs) / 1000)}s)")
+                    _state.update {
+                        it.copy(
+                            navigating = false,
+                            arrived = true,
+                            tripElapsedSeconds = (SystemClock.elapsedRealtime() - tripStartMs) / 1000.0,
+                        )
+                    }
+                }
+                NavEvent.RerouteNeeded -> {
+                    diag.record("nav", "off-route → rerouting from ${loc.lat},${loc.lng}")
+                    reroute(loc)
+                }
+            }
+        }
+        announceStopsPassed(route, next.traveledM)
+        maybeRecheck(loc, next)
+    }
+
+    /** Per-stop arrival cue: as along-route progress passes each waypoint's mark, announce it once, in
+     *  order ("You've reached <stop>"). A stop with no mark (not locatable on the route) is skipped
+     *  silently rather than blocking the rest. [route] must be the route [traveledM] was measured on —
+     *  if a reroute swapped the plan mid-fix, the identity check drops the stale frame instead of
+     *  comparing old progress to new marks (which would fire every cue at once). */
+    private fun announceStopsPassed(route: Route, traveledM: Double) {
+        val toSpeak = mutableListOf<String>()
+        synchronized(stopLock) {
+            if (route !== planRoute) return
+            while (passedStops < stops.size) {
+                val mark = stopMarks.getOrNull(passedStops)
+                if (mark == null) { passedStops++; continue }
+                if (traveledM >= mark - STOP_ARRIVE_TOL_M) {
+                    toSpeak += stops[passedStops].label
+                    passedStops++
+                } else break
+            }
+        }
+        toSpeak.forEach { label ->
+            voice.speak(app.vela.core.i18n.NavStringsRegistry.current().reachedStop(label))
+            diag.record("nav", "reached stop: ${label.ifBlank { "(unnamed)" }}")
+        }
+    }
+
+    fun acceptFasterRoute() {
+        val faster = _state.value.fasterRoute ?: return
+        lastSwapReason = "faster"
+        val first = faster.maneuvers.firstOrNull()?.instruction.orEmpty()
+        // The faster candidate was routed through the remaining stops (maybeRecheck rejects candidates
+        // that don't cover them) → adopt them + recompute marks, atomically with the plan-route swap.
+        synchronized(stopLock) {
+            val remainingStops = stops.drop(passedStops)
+            stops = remainingStops
+            stopMarks = NavEngine.stopMarks(faster, remainingStops.map { it.location })
+            passedStops = 0
+            planRoute = faster
+        }
+        lastRecheckMs = SystemClock.elapsedRealtime()
+        etaScale = 1.0 // the accepted route carries fresh traffic
+        _state.update {
+            it.copy(
+                route = faster,
+                nav = NavState(
+                    distanceToNextManeuver = faster.maneuvers.firstOrNull()?.distanceMeters ?: 0.0,
+                    remainingDistance = faster.distanceMeters,
+                    remainingDuration = faster.durationInTrafficSeconds ?: faster.durationSeconds,
+                ),
+                maneuverText = first,
+                remainingDistance = faster.distanceMeters,
+                remainingDuration = faster.durationInTrafficSeconds ?: faster.durationSeconds,
+                fasterRoute = null,
+                fasterSavingSeconds = 0.0,
+            )
+        }
+        voice.speak(app.vela.core.i18n.NavStringsRegistry.current().fasterRoute(first), interrupt = true)
+    }
+
+    fun dismissFasterRoute() {
+        // Remember what was dismissed so the next recheck doesn't re-offer (and re-speak) the
+        // same candidate two minutes later — it must beat this saving by a real margin first.
+        _state.value.fasterRoute?.let {
+            dismissedFasterKey = routeKey(it)
+            dismissedFasterSaving = _state.value.fasterSavingSeconds
+        }
+        _state.update { it.copy(fasterRoute = null, fasterSavingSeconds = 0.0) }
+    }
+
+    // --- live re-check ------------------------------------------------------
+
+    private fun maybeRecheck(loc: LatLng, nav: NavState) {
+        if (replayMode) return // hermetic replays never fetch live traffic/routes
+        if (!liveRechecks) return // privacy opt-out: no periodic current-position requests
+        val now = SystemClock.elapsedRealtime()
+        // A DEGRADED adopted route (abbreviated steps from the Google fallback, or no live
+        // traffic) already has a silent heal below - but on the ~2 min cadence the driver sat
+        // with a nameless banner disagreeing with the blue line for minutes after a reroute
+        // (issue #237). While degraded, recheck on a short interval so the heal lands within
+        // seconds of the open router recovering; bounded to a few tries per route (then back to
+        // the normal cadence) so a genuinely offline/trafficless drive doesn't poll forever.
+        val currentRoute = _state.value.route
+        if (currentRoute !== degradedRouteRef) {
+            degradedRouteRef = currentRoute
+            degradedFastRechecks = 0
+        }
+        val degraded = currentRoute != null && (currentRoute.abbreviatedSteps || !currentRoute.hasLiveTraffic)
+        val fastHeal = degraded && degradedFastRechecks < DEGRADED_FAST_TRIES
+        val interval = if (fastHeal) DEGRADED_RECHECK_INTERVAL_MS else RECHECK_INTERVAL_MS
+        if (now - lastRecheckMs < interval) return
+        if (nav.offRoute || nav.remainingDistance < MIN_RECHECK_DISTANCE_M) return
+        if (recheckJob?.isActive == true) return
+        // An offer is already on screen — don't fetch/re-speak over it every interval.
+        if (_state.value.fasterRoute != null) return
+        val dest = destination ?: return
+        lastRecheckMs = now
+        if (fastHeal) degradedFastRechecks++
+        // Named remainingStops (not `remaining`) — the launch body below declares `remaining` for the
+        // remaining DURATION, which would shadow this and hand a future edit seconds instead of stops.
+        val remainingStops = synchronized(stopLock) { stops.drop(passedStops) }
+        val gen = sessionGen
+        recheckJob = scope.launch {
+            val candidate = runCatching { dataSource.directions(loc, dest, mode, remainingStops.map { it.location }).firstOrNull() }.getOrNull()
+                ?.takeIf { it.reaches(dest) } ?: return@launch
+            if (gen != sessionGen) return@launch // session ended/restarted while fetching
+            // The waypointed directions call falls back to a DIRECT origin→dest route when the via
+            // routing fails — that route passes reaches(dest) but skips the stops, and it reads minutes
+            // "faster" precisely because it drops the detours. Never OFFER a route that doesn't cover
+            // every remaining stop (an offer is optional; guiding past a stop is not).
+            if (remainingStops.isNotEmpty() &&
+                NavEngine.stopMarks(candidate, remainingStops.map { it.location }).any { it == null }
+            ) return@launch
+            val candidateEta = candidate.durationInTrafficSeconds ?: candidate.durationSeconds
+            val remaining = _state.value.remainingDuration
+            // A TRAFFICLESS candidate (Google fetch failed -> free-flow ETA) must never drive the
+            // ETA calibration or a faster-route offer: free-flow is systematically optimistic, so
+            // against a traffic-aware baseline it always "wins" - the real-drive 2026-07-15 report
+            // (white suspiciously-fast ETA after accepting, syncing back to reality a recheck
+            // later) was exactly this. Trafficless can still silently heal abbreviated steps
+            // below (same course, so its GEOMETRY is fine even when its ETA is not comparable).
+            val trafficAware = candidate.hasLiveTraffic
+            // Even with NO course change the traffic ahead keeps evolving, and this candidate IS
+            // a fresh traffic-aware ETA from the live position. When it follows the route we're
+            // already driving (every sampled point within SAME_COURSE_M of the current line -
+            // tighter than the 700 m jam-detour test, which can't tell a parallel alternate from
+            // "same road"), recalibrate the published ETA to it instead of throwing it away: the
+            // engine's remaining time otherwise rides the traffic ratio captured at the LAST
+            // route fetch for the entire drive (user 2026-07-14). The multiplicative form makes
+            // the new scale independent of the old one (remaining already carries etaScale), and
+            // the offer logic below then compares candidates against a LIVE baseline too.
+            val current = _state.value.route
+            val sameCourse = current != null && candidateEta > 0.0 &&
+                !app.vela.core.data.RouteGeometry.divergent(current, candidate, SAME_COURSE_M)
+            if (sameCourse && remaining > 120.0 && trafficAware) {
+                etaScale = (etaScale * candidateEta / remaining).coerceIn(0.5, 2.5)
+            }
+            // ABBREVIATED-STEPS SELF-HEAL: an OSRM blip mid-drive makes a reroute fall back to
+            // Google's abbreviated steps (complete polyline, a fraction of the turns - the banner
+            // and voice disagree with the blue line, user real-drive report 2026-07-14), and an
+            // adopted one used to stay degraded for the REST of the drive because this recheck
+            // only cared about faster routes. When the open router has recovered, the same-course
+            // candidate carries the full step list - adopt it silently: same path, fresh traffic,
+            // real turns. Tagged at the source (Route.abbreviatedSteps), so a healthy route can
+            // never be churned by this. Same self-heal for a TRAFFICLESS current route (white ETA,
+            // real-drive 2026-07-15): once a same-course candidate carries live traffic again,
+            // adopt it so the ETA turns traffic-coloured and honest instead of staying white for
+            // the rest of the drive. Either upgrade qualifies; neither quality may downgrade.
+            val stepsUpgrade = current!!.abbreviatedSteps && !candidate.abbreviatedSteps
+            val trafficUpgrade = !current.hasLiveTraffic && candidate.hasLiveTraffic
+            val noDowngrade = (current.abbreviatedSteps || !candidate.abbreviatedSteps) &&
+                (!current.hasLiveTraffic || candidate.hasLiveTraffic)
+            if (sameCourse && !candidate.provisional && (stepsUpgrade || trafficUpgrade) && noDowngrade) {
+                lastSwapReason = "heal"
+                val marks = NavEngine.stopMarks(candidate, remainingStops.map { it.location })
+                synchronized(stopLock) {
+                    stops = remainingStops
+                    stopMarks = marks
+                    passedStops = 0
+                    planRoute = candidate
+                }
+                lastRerouteAdoptMs = SystemClock.elapsedRealtime()
+                etaScale = 1.0
+                _state.update {
+                    it.copy(
+                        route = candidate,
+                        nav = NavState(
+                            distanceToNextManeuver = candidate.maneuvers.firstOrNull()?.distanceMeters ?: 0.0,
+                            remainingDistance = candidate.distanceMeters,
+                            remainingDuration = candidateEta,
+                        ),
+                        maneuverText = candidate.maneuvers.firstOrNull()?.instruction.orEmpty(),
+                        remainingDistance = candidate.distanceMeters,
+                        remainingDuration = candidateEta,
+                        fasterRoute = null,
+                    )
+                }
+                diag.record(
+                    "nav",
+                    "recheck upgraded route (steps ${current.maneuvers.size} -> ${candidate.maneuvers.size}, " +
+                        "traffic ${current.hasLiveTraffic} -> ${candidate.hasLiveTraffic})",
+                )
+                return@launch
+            }
+            val saving = remaining - candidateEta
+            // A candidate similar to one the user DISMISSED is only re-offered when it beats the
+            // dismissed saving by a real margin — not re-spoken verbatim every 2 minutes.
+            if (routeKey(candidate) == dismissedFasterKey && saving < dismissedFasterSaving + 60.0) return@launch
+            // Offer it only if it saves real time AND isn't implausibly short — a candidate claiming to cut
+            // the same trip to a fraction of the time left is a bad route, not a real faster path. And only
+            // when its ETA is traffic-aware and its steps are real (never trade a healthy route for an
+            // abbreviated one on the strength of an incomparable ETA).
+            if (trafficAware && !candidate.abbreviatedSteps &&
+                saving > FASTER_THRESHOLD_S && candidateEta in (remaining * MIN_PLAUSIBLE_ETA_FRACTION)..(remaining * 0.9)
+            ) {
+                _state.update { it.copy(fasterRoute = candidate, fasterSavingSeconds = saving) }
+                voice.speak(
+                    app.vela.core.i18n.NavStringsRegistry.current()
+                        .fasterRouteAvailable((saving / 60).toInt().coerceAtLeast(1)),
+                )
+            }
+        }
+    }
+
+    /** Identity for "the same candidate route" across rechecks (dismissal memory). Keyed on the
+     *  route's TAIL geometry — every recheck fetches from the CURRENT position, so total length /
+     *  point count shrink as you drive and would never match; the destination-approach geometry
+     *  survives forward progress. */
+    private fun routeKey(r: Route): Long {
+        var h = 1125899906842597L
+        r.polyline.takeLast(20).forEach { p ->
+            h = 31 * h + (p.lat * 1e5).toLong()
+            h = 31 * h + (p.lng * 1e5).toLong()
+        }
+        return h
+    }
+
+    /** Adopt a route swap RECORDED in a trip being replayed (silent, no fetch) — the replay
+     *  equivalent of the reroute/faster-route adoption that happened during the real drive. */
+    fun replaySetRoute(r: Route, chime: Boolean = true) {
+        if (r.polyline.size < 2) return
+        synchronized(stopLock) { stops = emptyList(); stopMarks = emptyList(); passedStops = 0; planRoute = r }
+        etaScale = 1.0
+        // The reroute earcon plays at recorded swap points too (user 2026-07-16: "didn't hear
+        // the rerouting sound in the replay") - replay is the nav test bench, and the chime is
+        // the audible marker the route changed here. Trips record WHY each swap happened now
+        // (the RD line's reason field), so the caller passes chime=false for swaps that were
+        // quiet live (faster/heal/stop-added); reason-less old recordings chime for every swap.
+        if (chime) voice.reroutingChime()
+        diag.record("nav", "replay: route swap (${r.maneuvers.size} steps)")
+        _state.update {
+            it.copy(
+                route = r,
+                nav = NavState(
+                    distanceToNextManeuver = r.maneuvers.firstOrNull()?.distanceMeters ?: 0.0,
+                    remainingDistance = r.distanceMeters,
+                    remainingDuration = r.durationInTrafficSeconds ?: r.durationSeconds,
+                ),
+                maneuverText = r.maneuvers.firstOrNull()?.instruction.orEmpty(),
+                remainingDistance = r.distanceMeters,
+                remainingDuration = r.durationInTrafficSeconds ?: r.durationSeconds,
+                fasterRoute = null,
+            )
+        }
+    }
+
+    private fun reroute(loc: LatLng) {
+        if (replayMode) {
+            diag.record("nav", "replay: live reroute suppressed (recorded swaps play back instead)")
+            return
+        }
+        val dest = destination ?: return
+        val now = SystemClock.elapsedRealtime()
+        // Single-flight + cooldown: one fetch at a time, and no re-adoption storm while GPS is
+        // biased toward a parallel road (the new route lands, the biased fixes are >45 m from IT
+        // too, 4 s later another "Rerouting…" — forever). The engine keeps emitting RerouteNeeded
+        // while deviated (the latch clears on failure below), so a skipped request here is simply
+        // retried by the next qualifying fix after the cooldown.
+        if (rerouteJob?.isActive == true || now - lastRerouteAdoptMs < REROUTE_COOLDOWN_MS) return
+        // Announce sparsely: the first attempt of a burst speaks, silent retries don't re-announce.
+        if (now - lastRerouteSpokeMs > REROUTE_SPEAK_MIN_MS) {
+            lastRerouteSpokeMs = now
+            // Google's earcon first (a soft two-note chime), then the spoken word - the chime
+            // registers even when a prompt is mid-sentence or the ear expects music (user 2026-07-16).
+            voice.reroutingChime()
+            voice.speak(app.vela.core.i18n.NavStringsRegistry.current().rerouting(), interrupt = true)
+            // A buzz too (its own pattern, see Haptics.reroute) — the voice is useless muted or on
+            // a windy ride, and the banner's "rerouting…" needs eyes on the screen.
+            haptics.reroute(mode)
+        }
+        // Reroute THROUGH the stops you haven't reached yet — not straight to the final destination
+        // (that used to silently drop your remaining stops on any off-route wobble).
+        val remainingStops = synchronized(stopLock) { stops.drop(passedStops) }
+        val gen = sessionGen
+        // The route we were following when we went off-route. If the driver returns to THIS line while
+        // we're fetching (see the back-on-course check below), we abandon the reroute rather than swap.
+        val fromRoute = _state.value.route
+        rerouteJob = scope.launch {
+            // A reroute that doesn't actually reach the destination is a bad result — keep guiding on the
+            // current route rather than swapping to a truncated/wrong one. (Guard unchanged: the route still
+            // ends at the same final dest even with waypoints in between.)
+            // HARD DEADLINE on the fetch (2026-07-21, real-drive hang): a slow fetch could hold
+            // this job for a minute or more — and the single-flight guard
+            // above drops every new RerouteNeeded while it runs, which read as "the second reroute
+            // hung" (the driver had to kill nav). A reroute computed from a position that old is
+            // stale anyway; past the deadline, fail into the same retry-while-deviated path below
+            // so the next qualifying fix fires a FRESH request from where the car actually is.
+            // urgent = single-shot fetches, no divergence snap (issues #185/#236): the full
+            // planning ladder regularly outlived this deadline on a weak link, so the timeout
+            // cancelled work that was about to succeed and the driver sat unrerouted through
+            // repeated attempts. A lean route lands in seconds; the recheck loop restores
+            // traffic/steps quality afterwards.
+            val r = kotlinx.coroutines.withTimeoutOrNull(REROUTE_FETCH_TIMEOUT_MS) {
+                runCatching { dataSource.directions(loc, dest, mode, remainingStops.map { it.location }, urgent = true) }
+                    .getOrNull()?.firstOrNull()?.takeIf { it.reaches(dest) }
+            }
+            if (gen != sessionGen) return@launch // session ended / restarted while fetching — drop it
+            // BACK ON COURSE: while we were fetching (~1-3 s), did the driver return to the ORIGINAL route?
+            // A U-turn (or any wobble) fires RerouteNeeded, but by the time the fetch lands the driver has
+            // often completed it and rejoined the planned line. Swapping in a fresh route then yanks a driver
+            // who already self-corrected onto a different path — so if the route hasn't otherwise changed and
+            // we're solidly back on the line, discard this reroute and carry on (Google's "you're back on
+            // course"). SUSTAINED, not one fix: offRoute clears on a SINGLE grazing fix within OFF_ROUTE_M,
+            // which a spurious graze on a parallel/overlapping leg trips — so gate on onRouteStreak (N
+            // consecutive on-corridor+moving fixes), NOT bare !offRoute, or a real missed-turn reroute could
+            // be wrongly abandoned. Still off / only grazed → adopt r as before. Self-healing: a re-deviation
+            // re-fires RerouteNeeded on the next rising edge (no cooldown charged — we return before adopt).
+            val backNav = _state.value.nav
+            if (_state.value.route === fromRoute && !backNav.offRoute && backNav.onRouteStreak >= BACK_ON_COURSE_HITS) {
+                diag.record("nav", "reroute discarded — driver solidly back on the original route (streak ${backNav.onRouteStreak})")
+                return@launch
+            }
+            if (r == null) {
+                // FAILED (dead spot / OSRM 5xx / truncated result). The old code returned silently
+                // and rerouting was DEAD for the rest of the excursion: RerouteNeeded is
+                // edge-triggered on the offRoute latch, which never re-fires while still off the
+                // old route. Flag the latch clear for the LOCATION THREAD to consume (writing nav
+                // state from here raced the in-flight onLocation frame) — 4 more deviated fixes
+                // then request again (~4 s natural backoff, OsmAnd-style retry-while-deviated).
+                diag.record("nav", "reroute FAILED — will retry while off-route")
+                pendingLatchClear.set(true)
+                return@launch
+            }
+            // New route starts here → recompute the marks, reset the counter. Unlike the faster-route
+            // OFFER we accept a route that couldn't include the stops (being guided beats staying
+            // off-route), but we say so and KEEP the stops in the plan — their marks are null on this
+            // route, and the next recheck routes through them again once the via routing recovers.
+            val marks = NavEngine.stopMarks(r, remainingStops.map { it.location })
+            synchronized(stopLock) {
+                stops = remainingStops
+                stopMarks = marks
+                passedStops = 0
+                planRoute = r
+            }
+            if (remainingStops.isNotEmpty() && marks.any { it == null }) {
+                voice.speak(app.vela.core.i18n.NavStringsRegistry.current().stopsNotIncluded())
+                diag.record("nav", "reroute missing ${marks.count { it == null }}/${remainingStops.size} stops")
+            }
+            lastSwapReason = "reroute"
+            lastRecheckMs = SystemClock.elapsedRealtime()
+            lastRerouteAdoptMs = SystemClock.elapsedRealtime()
+            etaScale = 1.0 // the fresh route carries fresh traffic
+            _state.update {
+                it.copy(
+                    route = r,
+                    nav = NavState(
+                        distanceToNextManeuver = r.maneuvers.firstOrNull()?.distanceMeters ?: 0.0,
+                        remainingDistance = r.distanceMeters,
+                        remainingDuration = r.durationInTrafficSeconds ?: r.durationSeconds,
+                    ),
+                    maneuverText = r.maneuvers.firstOrNull()?.instruction.orEmpty(),
+                    remainingDistance = r.distanceMeters,
+                    remainingDuration = r.durationInTrafficSeconds ?: r.durationSeconds,
+                    fasterRoute = null,
+                )
+            }
+        }
+    }
+
+    /** Does this route actually END near [dest]? A route whose last point is far from the destination is
+     *  truncated or wrong; swapping to it mid-nav is the "10 min away / wrong final step" bug. */
+    private fun Route.reaches(dest: LatLng) =
+        polyline.lastOrNull()?.let { it.distanceTo(dest) <= REACH_TOLERANCE_M } ?: false
+
+    // Public for destinationDisplay (callers build the arrive-step lines before start());
+    // the tuning constants stay implementation detail by convention.
+    companion object {
+        const val RECHECK_INTERVAL_MS = 120_000L   // re-check traffic every ~2 min
+        const val DEGRADED_RECHECK_INTERVAL_MS = 20_000L // fast heal cadence while the route is degraded
+        const val DEGRADED_FAST_TRIES = 6          // ~2 min of fast heal attempts per degraded route
+        // A recheck candidate whose sampled points all sit within this of the current route line
+        // counts as the SAME course -> its fresh ETA recalibrates the shown arrival time. Tighter
+        // than the 700 m divergence default: a parallel arterial can sit inside 700 m of a highway
+        // for miles, and calibrating our ETA from a route we are not driving would lie.
+        const val SAME_COURSE_M = 250.0
+        const val MIN_RECHECK_DISTANCE_M = 1_500.0 // don't bother near the destination
+        const val FASTER_THRESHOLD_S = 90.0        // only offer if it saves real time
+        const val REROUTE_COOLDOWN_MS = 10_000L    // min gap between ADOPTED reroutes (no reroute storms)
+        // Deadline on one reroute FETCH: generous next to Google's 1-3 s but far under the retry
+        // ladders' worst case; past it the position the request was computed from is stale anyway.
+        const val REROUTE_FETCH_TIMEOUT_MS = 20_000L
+        const val REROUTE_SPEAK_MIN_MS = 30_000L   // "Rerouting" spoken at most this often (retries are silent)
+        const val BACK_ON_COURSE_HITS = 2          // consecutive on-corridor fixes before an in-flight reroute
+                                                   // is abandoned as "back on course" — >1 so a single grazing
+                                                   // fix can't kill a legitimate missed-turn reroute (tune from
+                                                   // a real u-turn capture; 2 filters grazes, catches rejoins)
+        // A reroute/faster candidate must actually END near the destination — a truncated or wrong route
+        // (its last point miles from dest) is the "10 min away, wrong final step" bug; never swap to it.
+        const val REACH_TOLERANCE_M = 500.0
+        // …and it can't be implausibly short: the same trip can't suddenly take <40% of the time left
+        // (that's a bad route, not real traffic). Guards the faster-route offer from a bogus short ETA.
+        const val MIN_PLAUSIBLE_ETA_FRACTION = 0.4
+        // Fire the per-stop cue when along-route progress gets within this of the stop's mark (as you pass).
+        const val STOP_ARRIVE_TOL_M = 25.0
+
+        /** Primary + secondary display lines for a destination, robust to partial data. Offline
+         *  routing often has no business name — just "123 Main St" from the offline geocoder, a
+         *  bare street from the street-fallback tier, or nothing but the tapped point. Primary =
+         *  the name, else the address, else the raw coordinates (something always shows).
+         *  Secondary = the address only when it adds something the primary line doesn't already
+         *  say (an address search's "name" IS its address — don't print it twice). */
+        fun destinationDisplay(name: String?, address: String?, dest: LatLng?): Pair<String, String?> {
+            val n = name?.trim().orEmpty()
+            val a = address?.trim().orEmpty()
+            val primary = n.ifBlank {
+                a.ifBlank {
+                    dest?.let { String.format(java.util.Locale.US, "%.5f, %.5f", it.lat, it.lng) }.orEmpty()
+                }
+            }
+            val secondary = a.takeIf { it.isNotBlank() && !it.equals(primary, ignoreCase = true) }
+            return primary to secondary
+        }
+    }
+}
