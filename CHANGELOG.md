@@ -1,5 +1,13 @@
 # Changelog
 
+- 2026-08-12 — Main-page category and Guide buttons now open their native Apple-data trays without navigating the
+  mounted consumer map WebView. Opening or closing Restaurants, Parking, and the other home browse actions therefore
+  preserves the existing map session, camera, tiles, and annotations instead of reloading `maps.apple.com`.
+  Added a source-contract test that rejects renderer navigation from these actions. VersionCode 9 / versionName
+  `0.10-stable-home-browse`. Files: `ConsumerMapController.kt`, `AppleMapsScreen.kt`, and
+  `ConsumerRouteFramingTest.kt`. JVM tests, Android lint, and debug assembly pass. The canonical APK is 27,325,406
+  bytes with SHA-256 `34ff5ef454a4a8818eebd7f41e1b952fbd7b82126f422faf313a8afa29f155ea`.
+
 - 2026-08-11 — Repaired the complete reproduced consumer-map defect set for versionCode 8 / versionName
   `0.9-consumer-map-repairs`. Apple-selected places now use the bridge's exact place ID instead of replacing a selected
   result through text autocomplete; category-only current home responses replace stale home content; Guide chrome is

@@ -690,7 +690,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val closeBrowse = {
             browseRequestId++
             browseState = null
-            mapController.resetBrowsePage()
         }
         androidx.compose.animation.AnimatedVisibility(
             visible = browseState != null && place == null && !navMode,

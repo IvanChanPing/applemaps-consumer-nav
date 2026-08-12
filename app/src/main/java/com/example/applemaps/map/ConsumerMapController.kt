@@ -133,35 +133,23 @@ class ConsumerMapController(private val context: Context) : LocationListener {
 
     fun reload() = recreateRenderer()
 
-    /** Returns the hidden Apple page to its neutral map state after a native browse tray is dismissed. */
-    fun resetBrowsePage() {
-        if (!ready) return
-        main.post { webView?.loadUrl(CONSUMER_URL) }
-    }
-
-    /** Navigates the hidden consumer page to Apple's matching category state so its native map markers stay in sync. */
+    /** Validates that a native category tray can open without navigating or rebuilding the live map page. */
     fun showHomeCategory(label: String): Boolean {
         if (!ready || label.isBlank()) {
             DiagLog.log("CONSUMERMAP", "event=home_action_unavailable", "kind=category")
             return false
         }
-        val center = currentCenter
-        val query = java.net.URLEncoder.encode(label.take(80), Charsets.UTF_8.name())
-        val url = "https://maps.apple.com/search?center=${center.latitude}%2C${center.longitude}&span=0.12%2C0.12&query=$query"
-        main.post { webView?.loadUrl(url) }
-        DiagLog.log("CONSUMERMAP", "event=home_action", "kind=category", "mode=native-tray")
+        DiagLog.log("CONSUMERMAP", "event=home_action", "kind=category", "mode=native-tray-stable-map")
         return true
     }
 
-    /** Navigates the hidden consumer page to a verified Guide so Apple's native guide markers stay in sync. */
+    /** Validates that a native Guide tray can open without navigating or rebuilding the live map page. */
     fun showGuide(curatedId: String): Boolean {
         if (!ready || !curatedId.matches(Regex("[0-9]{1,20}"))) {
             DiagLog.log("CONSUMERMAP", "event=home_action_unavailable", "kind=guide")
             return false
         }
-        val url = "https://maps.apple.com/guides?curated=$curatedId&_provider=9902"
-        main.post { webView?.loadUrl(url) }
-        DiagLog.log("CONSUMERMAP", "event=home_action", "kind=guide", "mode=native-tray")
+        DiagLog.log("CONSUMERMAP", "event=home_action", "kind=guide", "mode=native-tray-stable-map")
         return true
     }
 
