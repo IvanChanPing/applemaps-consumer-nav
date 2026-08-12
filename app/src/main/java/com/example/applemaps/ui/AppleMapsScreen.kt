@@ -22,7 +22,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -251,18 +250,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     }
     if (place != null) lastPlace = place
     if (directionsRoutes != null) lastDir = directionsRoutes
-
-    // mapInputBottomInset — the live bottom band owned by the visible native sheet (plus system navigation).
-    // Map gestures may start only above this line; a gesture that starts on the map keeps its whole stream.
-    val activeSheetHeightPx = when {
-        navMode -> 0f
-        directionsRoutes != null -> directionsSheet.offsetPx
-        place != null -> placeSheet.offsetPx
-        else -> sheetController.offsetPx
-    }
-    val mapInputBottomInsetPx = (activeSheetHeightPx + WindowInsets.navigationBars.getBottom(density))
-        .coerceIn(0f, deviceScreenHeightPx)
-    SideEffect { mapController.setInputBottomInsetPx(mapInputBottomInsetPx) }
 
     // X or Back: slide the card down. TWO collapse behaviors (per the pin-restore bug):
     //  · Marked Location (long-press, no face) → the balloon shrinks to the small DOT, which stays.

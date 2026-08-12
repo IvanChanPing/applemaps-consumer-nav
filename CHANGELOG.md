@@ -1,5 +1,10 @@
 # Changelog
 
+- 2026-08-12 — Fixed map dragging across all selected-place cards by hosting the persistent Apple WebView directly
+  through Compose `AndroidView`. Android now routes map-origin gestures to the map and card-origin gestures to the
+  visible card, removing the shared full-screen sibling relay and its estimated sheet exclusion band. VersionCode 4 /
+  versionName `0.5-map-touch-routing`.
+
 - 2026-08-12 — Added a GitHub Actions workflow that runs the documented debug verification/build command on every
   push to `main` or manual dispatch and publishes `applemaps-consumer-nav-debug.apk` directly to GitHub Releases.
 

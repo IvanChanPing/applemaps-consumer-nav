@@ -13,7 +13,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
-import android.view.MotionEvent
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
@@ -62,10 +61,9 @@ data class ConsumerSelectedPlace(
 /**
  * Persistent controller for the consumer `maps.apple.com` renderer.
  *
- * The WebView is an Activity-level sibling below the transparent Compose UI. This keeps Apple tile/WebGL
- * state mounted while the copied sheets change. Compose controls receive their own taps; [dispatchTouchEvent]
- * forwards only gestures whose first down lands above the active sheet, then preserves that gesture's complete
- * stream for the WebView. The injected adapter updates every app-owned map node during camera movement and
+ * The WebView is hosted directly by Compose's AndroidView interop. This keeps Apple tile/WebGL state mounted while
+ * copied sheets change and gives the WebView the platform touch stream without a sibling-event relay. The injected
+ * adapter updates every app-owned map node during camera movement and
  * deselects Apple's native annotation after handing selection to the custom animated marker.
  * The page creates its own consumer session; this class never accepts or logs a developer token.
  */
@@ -89,7 +87,6 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     private var desiredProgress = 0f
     private var desiredNav: JSONObject? = null
     private var desiredUserLocation: MapCoordinate? = null
-    private var inputBottomInsetPx = 0f
     private val navArrowDataUrl by lazy { drawableDataUrl(R.drawable.ic_nav_arrow) }
 
     fun attachTo(target: FrameLayout) {
@@ -134,20 +131,6 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     }
 
     fun reload() = recreateRenderer()
-
-    /** Updates the bottom screen region owned by the currently visible Compose sheet/system navigation bar. */
-    fun setInputBottomInsetPx(value: Float) {
-        inputBottomInsetPx = value.coerceAtLeast(0f)
-    }
-
-    /** Synchronously admits a map-region down, then leaves the complete unmodified gesture stream to WebView. */
-    fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        val view = webView ?: return false
-        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
-            event.y >= (view.height - inputBottomInsetPx).coerceAtLeast(0f)
-        ) return false
-        return view.dispatchTouchEvent(event)
-    }
 
     fun center(): MapCoordinate = currentCenter
 
