@@ -332,6 +332,10 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     return@launch
                 }
                 val d = dest.routeCoordinate(dirMode, o)
+                if (!mapController.showConsumerDirections(o, d, dirMode, stops.value, avoidTolls, avoidHighways)) {
+                    if (requestId == routeRequestId) directionsError = "The selected route cannot be shown on Apple Maps."
+                    return@launch
+                }
                 // Avoid set → route via Valhalla (honors use_tolls/use_highways keyless); else the normal chain.
                 val routes = if (avoidTolls || avoidHighways)
                     RouteRepository.valhallaRoute(o, d, osrmProfile(dirMode), avoidTolls, avoidHighways, stops.value)
@@ -348,7 +352,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 }
                 if (!routes.isNullOrEmpty()) {
                     directionsRoutes = routes; selectedRoute = 0
-                    RouteLayer.drawRoutes(mapController, routes, labels = routeLabels(routes))
                     DiagLog.log("DIRECTIONS", "event=routes_ready", "request=$requestId", "count=${routes.size}", "stops=${stops.value.size}")
                 } else {
                     directionsError = "No route was found for the selected options."
@@ -362,9 +365,12 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     }
 
     fun handleConsumerSelection(selection: ConsumerSelectedPlace) {
-        if (navMode) return
+        // Route-page gestures and label taps belong to Apple's Directions UI; they must not replace the native
+        // destination behind the open planner. Normal place selection resumes when Directions is dismissed.
+        if (navMode || directionsRoutes != null) return
         browseState = null
         browseRequestId++
+        mapController.clearBrowsePlaces()
         if (selection.source == "app-marker") {
             val retained = place ?: lastPlace
             if (retained != null) {
@@ -439,14 +445,18 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         browseRequestId++
         val requestId = browseRequestId
         browseState = AppleBrowseState.Loading(category.label)
+        mapController.clearBrowsePlaces()
         scope.launch {
             val result = runCatching {
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                     AppleBrowseClient.category(category.query, parent.lat, parent.lon)
                 }
             }.getOrNull()
-            if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Category)
-                ?: AppleBrowseState.Error(category.label, "Apple Maps did not return places in this airport category.")
+            if (requestId == browseRequestId) {
+                browseState = result?.let(AppleBrowseState::Category)
+                    ?: AppleBrowseState.Error(category.label, "Apple Maps did not return places in this airport category.")
+                if (result != null) mapController.setBrowsePlaces(result.places) else mapController.clearBrowsePlaces()
+            }
         }
     }
 
@@ -495,6 +505,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     browseReturnPlace = null
                     val requestId = ++browseRequestId
                     browseState = AppleBrowseState.Loading(category.label)
+                    mapController.clearBrowsePlaces()
                     scope.launch {
                         val center = mapController.center()
                         val result = try {
@@ -507,8 +518,11 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                             DiagLog.log("APPLEBROWSE", "event=category_failed", "type=${error.javaClass.simpleName}")
                             null
                         }
-                        if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Category)
-                            ?: AppleBrowseState.Error(category.label, "Apple Maps did not return nearby places.")
+                        if (requestId == browseRequestId) {
+                            browseState = result?.let(AppleBrowseState::Category)
+                                ?: AppleBrowseState.Error(category.label, "Apple Maps did not return nearby places.")
+                            if (result != null) mapController.setBrowsePlaces(result.places) else mapController.clearBrowsePlaces()
+                        }
                     }
                 }
             },
@@ -517,6 +531,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     browseReturnPlace = null
                     val requestId = ++browseRequestId
                     browseState = AppleBrowseState.Loading("Guide")
+                    mapController.clearBrowsePlaces()
                     scope.launch {
                         val result = try {
                             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -528,8 +543,11 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                             DiagLog.log("APPLEBROWSE", "event=guide_failed", "type=${error.javaClass.simpleName}")
                             null
                         }
-                        if (requestId == browseRequestId) browseState = result?.let(AppleBrowseState::Guide)
-                            ?: AppleBrowseState.Error("Guide", "Apple Maps did not return this Guide.")
+                        if (requestId == browseRequestId) {
+                            browseState = result?.let(AppleBrowseState::Guide)
+                                ?: AppleBrowseState.Error("Guide", "Apple Maps did not return this Guide.")
+                            if (result != null) mapController.setBrowsePlaces(result.places) else mapController.clearBrowsePlaces()
+                        }
                     }
                 }
             },
@@ -610,14 +628,14 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val cardPlace = place ?: lastPlace
         val startDirections: () -> Unit = { stops.value = emptyList(); stopLabels.value = emptyList(); recomputeDirections() }
         val selectRoute: (Int) -> Unit = { idx ->
-            selectedRoute = idx
             val rs = directionsRoutes
-            if (rs != null) {
-                val ordered = listOf(rs[idx]) + rs.filterIndexed { i, _ -> i != idx }
-                RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false, labels = routeLabels(ordered))
-            }
+            if (rs != null && idx in rs.indices) selectedRoute = idx
         }
-        val exitDirections: () -> Unit = { directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList(); RouteLayer.clear(mapController) }
+        val exitDirections: () -> Unit = {
+            directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList()
+            RouteLayer.clear(mapController)
+            cardPlace?.let(mapController::showConsumerPlace)
+        }
         // GO keeps the consumer Apple route alive. The native sheets hide while the same WebView receives progress,
         // navigation-arrow, heading-follow, gesture-pause, recenter, and compass updates beneath NavOverlay.
         val startNav: () -> Unit = {
@@ -755,6 +773,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val closeBrowse = {
             browseRequestId++
             browseState = null
+            mapController.clearBrowsePlaces()
             browseReturnPlace?.let {
                 place = it
                 pin = MapCoordinate(it.lat, it.lon)
@@ -803,7 +822,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     mapController.clearNavigation()
                     placeSheet.goTo(1)
                 }
-                directionsRoutes != null -> { directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList(); RouteLayer.clear(mapController) }
+                directionsRoutes != null -> exitDirections()
                 else -> dismissCard()
             }
         }

@@ -62,9 +62,10 @@ data class ConsumerSelectedPlace(
  * The WebView is hosted directly by Compose's AndroidView interop. This keeps Apple tile/WebGL state mounted while
  * copied sheets change and gives the WebView the platform touch stream without a sibling-event relay. The injected
  * adapter retains Apple's selected annotation, creates app-origin selections
- * with MapKit's native marker, keeps scroll/zoom/rotation enabled, and forces the north compass visible. Directions
- * overlays never fit or otherwise take over the consumer camera; turn-by-turn route/arrow/camera state stays on this
- * one renderer instead of switching map engines after GO.
+ * with MapKit's native marker, keeps scroll/zoom/rotation enabled, and forces the north compass visible. Find Nearby
+ * results become bounded blue MapKit markers without reloading the page. Tapping the native **Directions** action
+ * loads Apple's unified consumer directions URL into this same WebView, so Apple's own route alternatives and camera
+ * overview render beneath the native planner; turn-by-turn route/arrow/camera state stays on this renderer after GO.
  * The page creates its own consumer session; this class never accepts or logs a developer token.
  */
 class ConsumerMapController(private val context: Context) : LocationListener {
@@ -85,6 +86,7 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     private var longPressCallback: (MapCoordinate) -> Unit = {}
     private var gestureCallback: () -> Unit = {}
     private var desiredPin: JSONObject? = null
+    private var desiredBrowsePlaces: JSONArray? = null
     private var desiredRoutes: JSONObject? = null
     private var desiredProgress = 0f
     private var desiredNav: JSONObject? = null
@@ -152,6 +154,76 @@ class ConsumerMapController(private val context: Context) : LocationListener {
         }
         DiagLog.log("CONSUMERMAP", "event=home_action", "kind=guide", "mode=native-tray-stable-map")
         return true
+    }
+
+    /** Displays the blue result markers that correspond to the native Find Nearby or Guide tray. */
+    fun setBrowsePlaces(places: List<AppleBrowsePlace>) {
+        desiredBrowsePlaces = JSONArray().apply {
+            places.take(20).forEach { result ->
+                val place = result.place
+                if (place.lat in -85.05112878..85.05112878 && place.lon in -180.0..180.0) {
+                    put(JSONObject()
+                        .put("id", result.id.take(180))
+                        .put("title", place.name.take(160))
+                        .put("category", place.category.take(120))
+                        .put("latitude", place.lat)
+                        .put("longitude", place.lon))
+                }
+            }
+        }
+        call("setBrowsePlaces", desiredBrowsePlaces.toString())
+        DiagLog.log("CONSUMERMAP", "event=browse_markers", "count=${desiredBrowsePlaces?.length() ?: 0}")
+    }
+
+    fun clearBrowsePlaces() {
+        desiredBrowsePlaces = null
+        call("setBrowsePlaces", "[]")
+    }
+
+    /** Opens Apple's consumer route page so its normal route labels and overview camera own Directions preview. */
+    fun showConsumerDirections(
+        origin: MapCoordinate,
+        destination: MapCoordinate,
+        mode: String,
+        waypoints: List<MapCoordinate>,
+        avoidTolls: Boolean,
+        avoidHighways: Boolean,
+    ): Boolean {
+        if (!origin.isConsumerCoordinate() || !destination.isConsumerCoordinate() || waypoints.any { !it.isConsumerCoordinate() }) {
+            return false
+        }
+        desiredRoutes = null
+        desiredProgress = 0f
+        val url = Uri.Builder().scheme("https").authority("maps.apple.com").appendPath("directions")
+            .appendQueryParameter("source", origin.consumerQueryValue())
+            .appendQueryParameter("destination", destination.consumerQueryValue())
+            .appendQueryParameter("mode", when (mode) {
+                "Walk" -> "walking"
+                "Cycle" -> "cycling"
+                "Transit" -> "transit"
+                else -> "driving"
+            })
+            .apply {
+                waypoints.forEach { appendQueryParameter("waypoint", it.consumerQueryValue()) }
+                buildList {
+                    if (avoidTolls) add("tolls")
+                    if (avoidHighways) add("highways")
+                }.takeIf { it.isNotEmpty() }?.let { appendQueryParameter("avoid", it.joinToString(",")) }
+            }
+            .build().toString()
+        main.post { webView?.loadUrl(url) }
+        DiagLog.log("CONSUMERMAP", "event=consumer_directions", "mode=${mode.take(16)}", "stops=${waypoints.size}")
+        return true
+    }
+
+    /** Returns from the consumer Directions page to Apple's place framing for the still-open native place card. */
+    fun showConsumerPlace(place: Place) {
+        if (place.lat !in -85.05112878..85.05112878 || place.lon !in -180.0..180.0) return
+        val url = Uri.Builder().scheme("https").authority("maps.apple.com").appendPath("place")
+            .appendQueryParameter("coordinate", "${place.lat},${place.lon}")
+            .appendQueryParameter("name", place.name.take(160))
+            .build().toString()
+        main.post { webView?.loadUrl(url) }
     }
 
     fun center(): MapCoordinate = currentCenter
@@ -342,6 +414,7 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     private fun syncDesiredState() {
         setMapType(mapType)
         call("setPin", desiredPin?.toString() ?: "null")
+        call("setBrowsePlaces", desiredBrowsePlaces?.toString() ?: "[]")
         desiredRoutes?.let { call("setRoutes", it.toString()); call("setRouteProgress", desiredProgress.toString()) }
         desiredNav?.let { call("setNavigationPose", it.toString()) }
         desiredUserLocation?.let { call("setUserLocation", JSONObject().put("latitude", it.latitude).put("longitude", it.longitude).toString()) }
@@ -514,13 +587,18 @@ class ConsumerMapController(private val context: Context) : LocationListener {
 
 private fun Uri.isAllowedConsumerPage(): Boolean = scheme == "https" && host == "maps.apple.com"
 
+private fun MapCoordinate.isConsumerCoordinate(): Boolean =
+    latitude in -85.05112878..85.05112878 && longitude in -180.0..180.0
+
+private fun MapCoordinate.consumerQueryValue(): String = "${latitude},${longitude}"
+
 private val CONSUMER_NAV_SCRIPT = """
 (() => {
   'use strict';
   const bridge = () => window.AndroidConsumerNav;
   const text = v => typeof v === 'string' ? v : '';
   if (window.__consumerNavAdapter) { window.__consumerNavAdapter.reportReady(); return; }
-  const state = {map:null,pin:null,appPin:null,pinOwned:false,pinData:null,user:null,nav:null,routeOverlays:[],routePrimary:[],routeLabels:[],attempts:0,raf:false,tracking:false,trackRaf:0,pointer:null,gestureSent:false};
+  const state = {map:null,pin:null,appPin:null,pinOwned:false,pinData:null,browseAnnotations:[],user:null,nav:null,routeOverlays:[],routePrimary:[],routeLabels:[],attempts:0,raf:false,tracking:false,trackRaf:0,pointer:null,gestureSent:false};
   const style = document.createElement('style');
   style.id = 'consumer-nav-style';
   style.textContent = `
@@ -558,10 +636,12 @@ private val CONSUMER_NAV_SCRIPT = """
   function stopTracking(){state.tracking=false;if(state.trackRaf)cancelAnimationFrame(state.trackRaf);state.trackRaf=0;queue()}
   function publishCamera(){const c=state.map?.center;if(c)bridge()?.onCamera(JSON.stringify({latitude:c.latitude,longitude:c.longitude,distance:state.map.cameraDistance,rotation:state.map.rotation}))}
   function urlPlaceId(){try{return new URL(location.href).searchParams.get('place-id')||''}catch(_){return''}}
-  function emitSelection(a,initial,frames,source){const c=a?.coordinate;if(!c)return;const now=urlPlaceId();if(source==='app-marker'||(now&&now!==initial)||frames<=0){bridge()?.onSelected(JSON.stringify({id:a.placeId||now||('coordinate:'+c.latitude+','+c.longitude),title:text(a.title)||'Marked Location',category:text(a.pointOfInterestCategory)||text(a.subtitle)||'Apple place',latitude:c.latitude,longitude:c.longitude,source:source||'apple-place'}));return}requestAnimationFrame(()=>emitSelection(a,initial,frames-1,source))}
+  function emitSelection(a,initial,frames,source){const c=a?.coordinate;if(!c)return;const now=urlPlaceId();if(source==='app-marker'||source==='apple-browse-marker'||(now&&now!==initial)||frames<=0){bridge()?.onSelected(JSON.stringify({id:a.__consumerId||a.placeId||now||('coordinate:'+c.latitude+','+c.longitude),title:text(a.title)||'Marked Location',category:text(a.__consumerCategory)||text(a.pointOfInterestCategory)||text(a.subtitle)||'Apple place',latitude:c.latitude,longitude:c.longitude,source:source||'apple-place'}));return}requestAnimationFrame(()=>emitSelection(a,initial,frames-1,source))}
   function sameCoordinate(a,p){const c=a?.coordinate;return !!c&&Math.abs(c.latitude-p.latitude)<1e-7&&Math.abs(c.longitude-p.longitude)<1e-7}
   function releasePin(){if(state.pinOwned&&state.pin&&state.map)state.map.removeAnnotation(state.pin);if(state.map?.selectedAnnotation===state.pin)state.map.selectedAnnotation=null;state.pin=null;state.appPin=null;state.pinOwned=false;state.pinData=null}
   function setPin(p){if(!state.map)return;state.pinData=p;if(!p){releasePin();return}if(!sameCoordinate(state.pin,p)){if(typeof mapkit.MarkerAnnotation!=='function'){bridge()?.onError('Apple marker unavailable','Consumer map did not expose MarkerAnnotation');return}releasePin();state.pin=new mapkit.MarkerAnnotation(new mapkit.Coordinate(p.latitude,p.longitude),{title:p.title||'',color:p.color||'#ff3b30'});state.appPin=state.pin;state.pinOwned=true;state.map.addAnnotation(state.pin)}if(p.expanded)state.map.selectedAnnotation=state.pin;else if(state.map.selectedAnnotation===state.pin)state.map.selectedAnnotation=null}
+  function clearBrowsePlaces(){if(!state.map){state.browseAnnotations=[];return}state.browseAnnotations.forEach(a=>{if(state.map.selectedAnnotation===a)state.map.selectedAnnotation=null;state.map.removeAnnotation(a);if(state.pin===a)state.pin=null});state.browseAnnotations=[]}
+  function setBrowsePlaces(items){clearBrowsePlaces();if(!state.map||!Array.isArray(items)||typeof mapkit.MarkerAnnotation!=='function')return;items.slice(0,20).forEach(p=>{if(!Number.isFinite(p.latitude)||!Number.isFinite(p.longitude))return;const a=new mapkit.MarkerAnnotation(new mapkit.Coordinate(p.latitude,p.longitude),{title:text(p.title),subtitle:text(p.category),color:'#007aff',glyphText:'•'});a.__consumerId=text(p.id);a.__consumerCategory=text(p.category);state.browseAnnotations.push(a);state.map.addAnnotation(a)})}
   function setUserLocation(p){state.userData=p;if(!p){state.user?.remove();state.user=null;return}state.user=node('consumer-user');queue()}
   function setNavigationPose(p){state.navData=p;state.nav=node('consumer-nav-arrow');state.nav.innerHTML='<img alt="" width="48" height="48" src="'+(p.image||'')+'">';state.nav.style.transform='translate(-50%,-50%) rotate('+p.bearing+'deg)';queue()}
   function clearNavigation(){state.navData=null;state.nav?.remove();state.nav=null}
@@ -574,9 +654,9 @@ private val CONSUMER_NAV_SCRIPT = """
   function setMapType(type){if(state.map)state.map.mapType=['standard','satellite','hybrid'].includes(type)?type:'standard'}
   function setCamera(p){if(!state.map||!p)return;state.map.setPadding(new mapkit.Padding(0,0,Number(p.bottomPadding)||0,0),!!p.animated);state.map.setCenterAnimated(new mapkit.Coordinate(p.latitude,p.longitude),!!p.animated);if(Number.isFinite(p.distance))state.map.setCameraDistanceAnimated(p.distance,!!p.animated);if(Number.isFinite(p.rotation))state.map.setRotationAnimated(p.rotation,!!p.animated)}
   function reportReady(){if(state.map)bridge()?.onReady()}
-  function install(){viewport();const m=window.mapkit?.maps?.[0];if(!m){if(++state.attempts<900)requestAnimationFrame(install);else bridge()?.onError('Consumer map','Timed out waiting for maps.apple.com renderer');return}state.map=m;m.isScrollEnabled=true;m.isZoomEnabled=true;m.isRotationEnabled=true;m.showsCompass=mapkit.FeatureVisibility.Visible;m.addEventListener('select',e=>{const a=e.annotation||m.selectedAnnotation;if(!a)return;if(a!==state.pin){if(state.pinOwned)releasePin();state.pin=a;state.pinOwned=a===state.appPin}emitSelection(a,urlPlaceId(),30,state.pinOwned?'app-marker':'apple-place')});m.addEventListener('region-change-start',startTracking);m.addEventListener('region-change-end',()=>{stopTracking();publishCamera()});const target=document.querySelector('#shell-map')||document.body;target.addEventListener('pointerdown',e=>{state.pointer={x:e.clientX,y:e.clientY,time:performance.now()};state.gestureSent=false},true);target.addEventListener('pointermove',e=>{if(!state.pointer)return;const d=Math.hypot(e.clientX-state.pointer.x,e.clientY-state.pointer.y);if(d>6&&!state.gestureSent){state.gestureSent=true;bridge()?.onGesture()}},true);target.addEventListener('pointerup',e=>{const p=state.pointer;state.pointer=null;if(!p)return;const d=Math.hypot(e.clientX-p.x,e.clientY-p.y);if(performance.now()-p.time>=500&&d<12){const c=m.convertPointOnPageToCoordinate(new DOMPoint(e.clientX,e.clientY));if(c)bridge()?.onLongPress(JSON.stringify({latitude:c.latitude,longitude:c.longitude}))}},true);bridge()?.onCamera(JSON.stringify({event:'controls',scroll:m.isScrollEnabled,zoom:m.isZoomEnabled,rotation:m.isRotationEnabled,compass:String(m.showsCompass)}));bridge()?.onReady()}
+  function install(){viewport();const m=window.mapkit?.maps?.[0];if(!m){if(++state.attempts<900)requestAnimationFrame(install);else bridge()?.onError('Consumer map','Timed out waiting for maps.apple.com renderer');return}state.map=m;m.isScrollEnabled=true;m.isZoomEnabled=true;m.isRotationEnabled=true;m.showsCompass=mapkit.FeatureVisibility.Visible;m.addEventListener('select',e=>{const a=e.annotation||m.selectedAnnotation;if(!a)return;const browse=state.browseAnnotations.includes(a);if(a!==state.pin){if(state.pinOwned)releasePin();state.pin=a;state.pinOwned=a===state.appPin}emitSelection(a,urlPlaceId(),30,state.pinOwned?'app-marker':(browse?'apple-browse-marker':'apple-place'))});m.addEventListener('region-change-start',startTracking);m.addEventListener('region-change-end',()=>{stopTracking();publishCamera()});const target=document.querySelector('#shell-map')||document.body;target.addEventListener('pointerdown',e=>{state.pointer={x:e.clientX,y:e.clientY,time:performance.now()};state.gestureSent=false},true);target.addEventListener('pointermove',e=>{if(!state.pointer)return;const d=Math.hypot(e.clientX-state.pointer.x,e.clientY-state.pointer.y);if(d>6&&!state.gestureSent){state.gestureSent=true;bridge()?.onGesture()}},true);target.addEventListener('pointerup',e=>{const p=state.pointer;state.pointer=null;if(!p)return;const d=Math.hypot(e.clientX-p.x,e.clientY-p.y);if(performance.now()-p.time>=500&&d<12){const c=m.convertPointOnPageToCoordinate(new DOMPoint(e.clientX,e.clientY));if(c)bridge()?.onLongPress(JSON.stringify({latitude:c.latitude,longitude:c.longitude}))}},true);bridge()?.onCamera(JSON.stringify({event:'controls',scroll:m.isScrollEnabled,zoom:m.isZoomEnabled,rotation:m.isRotationEnabled,compass:String(m.showsCompass)}));bridge()?.onReady()}
   addEventListener('resize',viewport);visualViewport?.addEventListener('resize',viewport);
-  window.__consumerNavAdapter={setPin,setUserLocation,setNavigationPose,clearNavigation,setRoutes,clearRoutes,setRouteProgress,setMapType,setCamera,reportReady};
+  window.__consumerNavAdapter={setPin,setBrowsePlaces,setUserLocation,setNavigationPose,clearNavigation,setRoutes,clearRoutes,setRouteProgress,setMapType,setCamera,reportReady};
   install();
 })()
 """.trimIndent()

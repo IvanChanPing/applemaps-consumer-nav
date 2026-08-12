@@ -1,5 +1,17 @@
 # Changelog
 
+- 2026-08-12 — Main-page Find Nearby and Guide trays now install up to 20 matching blue MapKit markers on the
+  already-mounted Apple map and clear them on close, selection, error, or replacement without refreshing the page.
+  **Directions** now opens Apple's official unified consumer route URL with the app's origin, destination, mode,
+  waypoints, and avoid options, allowing the web app's own alternatives, labels, and overview camera to render under
+  the native planner; preview no longer draws the app's separate route overlay. VersionCode 11 / versionName
+  `0.12-consumer-browse-and-directions`. Files: `ConsumerMapController.kt`, `AppleMapsScreen.kt`, focused contract
+  tests, and version metadata. Route-page map taps are ignored by the native place-selection bridge while Directions
+  is open, preventing a panned-over POI from silently replacing the planned destination. The final 42-test run,
+  Android lint, and debug assembly pass. Real UI taps showed the matching result dots, Apple's route overview, and
+  horizontal and vertical route panning. Canonical APK: 27,949,462 bytes; SHA-256
+  `e40a8bf854afa1804ff926ff1f5d145a358b1e7b7707102d408f989125ff6d58`.
+
 - 2026-08-12 — Airport and large-venue place cards now retain Apple's complete categorized photo albums with
   captions/provider actions, expandable attributed About copy, Amenity V2 labels/icons, and rich clickable “Also at
   This Location” cards with ratings and a full list. Airport Directory exposes terminals, levels, airlines, and the
