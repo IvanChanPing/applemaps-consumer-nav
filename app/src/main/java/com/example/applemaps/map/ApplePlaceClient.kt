@@ -40,8 +40,13 @@ internal object ApplePlaceClient {
         "GOOD_FOR_GROUPS" to "Good for Groups",
     )
 
-    fun lookup(query: String, lat: Double, lon: Double): Place? {
-        val placeId = autocomplete(query, lat, lon) ?: return null
+    /**
+     * Resolves the selected consumer-map entity. A bridge-provided [selectedPlaceId] is authoritative:
+     * autocomplete is only for searches that did not originate from Apple's selected annotation.
+     */
+    fun lookup(query: String, lat: Double, lon: Double, selectedPlaceId: String? = null): Place? {
+        val placeId = selectedPlaceId?.takeIf { it.isNotBlank() && !it.startsWith("coordinate:") }
+            ?: autocomplete(query, lat, lon) ?: return null
         val encodedId = URLEncoder.encode(placeId, Charsets.UTF_8.name())
         val html = get("https://maps.apple.com/place?place-id=$encodedId")
         return parsePlace(query, lat, lon, html)
@@ -150,13 +155,16 @@ internal object ApplePlaceClient {
 
         val amenities = parseAmenities(components["COMPONENT_TYPE_AMENITIES"])
         val reviews = parseReviews(components["COMPONENT_TYPE_REVIEW"])
-        val photos = parsePhotos(rawPlace.toString())
+        val categorizedPhotos = parseCategorizedPhotos(components["COMPONENT_TYPE_CATEGORIZED_PHOTOS"])
+        val photos = categorizedPhotos?.urls ?: parsePhotos(rawPlace.toString())
         val addressObject = componentValue("COMPONENT_TYPE_ADDRESS_OBJECT")?.optJSONObject("addressObject")
         val addressLines = addressObject?.optJSONArray("formattedAddressLines")
         val address = if (addressLines != null) (0 until addressLines.length())
             .mapNotNull { addressLines.optString(it).takeIf(String::isNotBlank) }.joinToString(", ")
         else ""
         val about = firstString(components["COMPONENT_TYPE_ABOUT"]?.opt("value"))
+            ?: componentValue("COMPONENT_TYPE_TEXT_BLOCK")?.optJSONObject("textBlock")
+                ?.let { firstString(it.opt("text")) }
             ?: firstString(components["COMPONENT_TYPE_RESULT_SNIPPET"]?.opt("value"))
 
         return Place(
@@ -179,9 +187,57 @@ internal object ApplePlaceClient {
             ratingSource = ratingComponent?.optJSONObject("attribution")?.optString("displayName")?.ifBlank { null },
             description = about,
             amenities = amenities,
+            photoLabels = categorizedPhotos?.labels.orEmpty(),
             photoUrls = photos,
             reviews = reviews,
+            alsoHere = parseAlsoHere(components["COMPONENT_TYPE_TEMPLATE_PLACE"]),
         )
+    }
+
+    private data class CategorizedPhotos(val urls: List<String>, val labels: List<String>)
+
+    /** Maps Apple's airport/venue photo categories to the native tray's aligned cover-card model. */
+    private fun parseCategorizedPhotos(component: JSONObject?): CategorizedPhotos? {
+        val values = component?.optJSONArray("value") ?: return null
+        val urls = mutableListOf<String>()
+        val labels = mutableListOf<String>()
+        for (valueIndex in 0 until values.length()) {
+            val category = values.optJSONObject(valueIndex)?.optJSONObject("categorizedPhotos") ?: continue
+            val label = firstString(category.opt("categoryName")) ?: continue
+            val photos = category.optJSONArray("photo") ?: continue
+            val cover = (0 until photos.length()).asSequence()
+                .mapNotNull { photoUrl(photos.optJSONObject(it)) }.firstOrNull() ?: continue
+            urls += cover
+            labels += label
+        }
+        if (urls.isEmpty()) return null
+        return CategorizedPhotos(urls, labels)
+    }
+
+    private fun photoUrl(value: JSONObject?): String? {
+        val photo = value?.optJSONObject("photo") ?: value ?: return null
+        val versions = photo.optJSONArray("photoVersion") ?: photo.optJSONArray("photoVersions") ?: return null
+        val candidates = (0 until versions.length()).mapNotNull { index ->
+            val version = versions.optJSONObject(index) ?: return@mapNotNull null
+            version.optString("url").takeIf(String::isNotBlank)?.let { version.optString("urlType") to it }
+        }
+        val selected = candidates.firstOrNull { (type, url) ->
+            type == "URL_TYPE_AMP_TEMPLATE" || "{w}" in url || "{h}" in url
+        }?.second ?: candidates.firstOrNull()?.second ?: return null
+        return selected.replace("{w}", "1200").replace("{h}", "1200").replace("{f}", "jpg")
+    }
+
+    private fun parseAlsoHere(component: JSONObject?): List<String> {
+        val values = component?.optJSONArray("value") ?: return emptyList()
+        val names = linkedSetOf<String>()
+        for (valueIndex in 0 until values.length()) {
+            val templates = values.optJSONObject(valueIndex)?.optJSONObject("templatePlace")
+                ?.optJSONArray("templateData") ?: continue
+            for (templateIndex in 0 until templates.length()) {
+                firstString(templates.optJSONObject(templateIndex)?.opt("title"))?.let(names::add)
+            }
+        }
+        return names.take(12)
     }
 
     private data class ParsedHours(val today: String?, val open: Boolean?, val nextTransition: String?)

@@ -1,5 +1,18 @@
 # Changelog
 
+- 2026-08-11 — Repaired the complete reproduced consumer-map defect set for versionCode 8 / versionName
+  `0.9-consumer-map-repairs`. Apple-selected places now use the bridge's exact place ID instead of replacing a selected
+  result through text autocomplete; category-only current home responses replace stale home content; Guide chrome is
+  hidden when Apple supplies no Guides. Place recentering no longer gives native sheet pixels to MapKit's WebView
+  viewport padding, Directions Exit/Back no longer issues a camera reset, selected Add Stop names remain aligned with
+  their waypoints, and the More popover is focusable so its outside dismissal is modal. Browse dismissal resets the
+  hidden Apple page to its neutral state, sample station departures are not shown as real data, and a renderer missing
+  after resume is recreated. Airport and other large-venue cards now map Apple's categorized photo covers, text block,
+  and co-located place templates into the native tray. Navigation observes all enabled Android location providers so a
+  missing fused sample cannot mask a current GPS fix, and selective Apple control filtering retains the native compass.
+  Files: `ApplePlaceClient.kt`, `AppleBrowseClient.kt`, `Place.kt`, `NavEngine.kt`,
+  `ConsumerMapController.kt`, `AppleMapsScreen.kt`, `DirectionsSheet.kt`, `HomeFrontPage.kt`, and `PlaceCard.kt`.
+
 - 2026-08-11 — Replaced the static home categories, Guide titles, and solid-color Guide placeholders with Apple's
   latest region-scoped `/data/search-home` feed for versionCode 7 / versionName `0.8-live-home-feed`. The app waits
   for Apple's real camera center, debounces region changes, invalidates older requests immediately, resolves the

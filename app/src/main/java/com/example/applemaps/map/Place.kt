@@ -325,9 +325,9 @@ object PlaceRepository {
      * Runs the former box-side Apple Maps Web autocomplete/place-page parser directly on-device. The request
      * contract and returned rich fields match `appleplace.py`; no box URL, Apple account, or billable key is used.
      */
-    suspend fun fetchApplePlace(q: String, lat: Double, lon: Double): Place? = withContext(Dispatchers.IO) {
+    suspend fun fetchApplePlace(q: String, lat: Double, lon: Double, selectedPlaceId: String? = null): Place? = withContext(Dispatchers.IO) {
         try {
-            ApplePlaceClient.lookup(q, lat, lon).also { result ->
+            ApplePlaceClient.lookup(q, lat, lon, selectedPlaceId).also { result ->
                 DiagLog.log(
                     "APPLEPLACE", "event=complete", "found=${if (result == null) 0 else 1}",
                     "photos=${result?.photoUrls?.size ?: 0}", "reviews=${result?.reviews?.size ?: 0}",

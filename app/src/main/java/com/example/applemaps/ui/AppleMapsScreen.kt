@@ -111,6 +111,13 @@ internal fun updatedRouteStops(
     else -> null
 }
 
+/** Keeps the Add Stop label list aligned with the coordinate list for replacement and append operations. */
+internal fun updatedStopLabels(labels: List<String>, index: Int, label: String): List<String>? = when {
+    index in labels.indices -> labels.toMutableList().also { it[index] = label }
+    index == labels.size -> labels + label
+    else -> null
+}
+
 // ETA bubble text for each route (time + descriptor), in the order the routes are drawn (index 0 = selected).
 private fun routeLabels(routes: List<com.example.applemaps.map.Route>): List<Pair<String, String>> = routes.mapIndexed { i, r ->
     val m = (r.durationSeconds / 60.0).roundToInt().coerceAtLeast(1)
@@ -156,6 +163,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var dirMode by remember { mutableStateOf("Drive") }
     var navMode by remember { mutableStateOf(false) }   // turn-by-turn: consumer WebView route + native overlay
     val stops = remember { mutableStateOf<List<MapCoordinate>>(emptyList()) }   // via-waypoints added via "Add Stop"
+    val stopLabels = remember { mutableStateOf<List<String>>(emptyList()) }     // labels retained beside route waypoints
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val navEngine = remember { com.example.applemaps.nav.NavEngine(context) }   // Ferrostar TBT core (Option A)
@@ -210,6 +218,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 homeContent = result
                 homeError = null
             } else {
+                homeContent = null
                 homeError = "Apple Maps home couldn't refresh."
             }
         }
@@ -258,17 +267,17 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     }
     /**
      * displayedPinRecenter — camera motion invoked by every action that produces the visible map balloon.
-     * Test with a long-press, POI/transit icon tap, and normal search result. Source/compile verified only;
-     * real on-device framing remains unverified because this project is barred from the shared emulator.
+     * It deliberately does not translate native-sheet physical pixels into MapKit padding: that value belongs to
+     * the WebView's CSS viewport and had produced a world-scale camera jump. Test with a long-press, POI/transit
+     * icon tap, and normal search result. Source reviewed only; device behavior remains unverified.
      */
     fun recenterOnPin(location: MapCoordinate, zoom: Double? = null) {
         if (!PlaceRepository.isValidMapCoordinate(location.latitude, location.longitude)) {
             DiagLog.log("MAPCAM", "rejectInvalid", "lat=${location.latitude}", "lon=${location.longitude}")
             return
         }
-        val sheetPad = maxOf(placeSheet.offsetPx, with(density) { 320.dp.toPx() }).coerceAtMost(deviceScreenHeightPx * 0.68f)
-        mapController.centerOn(location, zoom = zoom, bottomPaddingPx = sheetPad.roundToInt())
-        DiagLog.log("MAPCAM", "select", "lat=${location.latitude}", "lon=${location.longitude}", "zoom=${zoom ?: -1.0}", "bottomPad=${sheetPad.roundToInt()}")
+        mapController.centerOn(location, zoom = zoom)
+        DiagLog.log("MAPCAM", "select", "lat=${location.latitude}", "lon=${location.longitude}", "zoom=${zoom ?: -1.0}", "bottomPad=0")
     }
     fun openLookAround(
         target: Place,
@@ -296,7 +305,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     //    icon shows again ("back to the icon") — collapsing a POI to a circular dot was the wrong behavior.
     fun dismissCard() {
         selectionGeneration++
-        place = null; isStation = false; placeLoading = false; directionsRoutes = null; directionsError = null; stops.value = emptyList()
+        place = null; isStation = false; stationInfo = null; placeLoading = false; directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList()
         if (!pinIsDropped) { pin = null; pinFace = null; pinLabel = "Marked Location"; minimized = false } else { minimized = true }
         RouteLayer.clear(mapController)
     }
@@ -375,16 +384,11 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val transit = listOf("transit", "station", "railway", "subway", "bus", "tram", "ferry", "rail")
             .any { category.contains(it, ignoreCase = true) }
         isStation = transit
-        if (transit) stationInfo = StationInfo(title, category, listOf(
-            Departure("F Train", "Downtown to Coney Island", "1, 8"),
-            Departure("F Train", "Uptown to Jamaica–179 St", "3, 11"),
-            Departure("L Train", "To Canarsie–Rockaway Pkwy", "2, 9"),
-            Departure("Q Train", "To 96 St–2 Av", "5, 14"),
-        ))
+        stationInfo = null // No live departures provider is connected; never render unrelated sample departures.
         place = Place(title, category, "", "", location.latitude, location.longitude)
         placeLoading = true
         scope.launch {
-            val real = PlaceRepository.fetchApplePlace(title, location.latitude, location.longitude)
+            val real = PlaceRepository.fetchApplePlace(title, location.latitude, location.longitude, selection.id)
                 ?: PlaceRepository.fetchGooglePlace(title, location.latitude, location.longitude)
             if (selectionGeneration == requestGeneration && place?.lat == location.latitude && place?.lon == location.longitude) {
                 if (real != null) place = real
@@ -553,7 +557,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         // (not nested), so dismissing the top one leaves the other EXACTLY where it was — neither sheet drives the
         // other's position or size. This is the "separate sheet for every thing, stacked" model.
         val cardPlace = place ?: lastPlace
-        val startDirections: () -> Unit = { stops.value = emptyList(); recomputeDirections() }
+        val startDirections: () -> Unit = { stops.value = emptyList(); stopLabels.value = emptyList(); recomputeDirections() }
         val selectRoute: (Int) -> Unit = { idx ->
             selectedRoute = idx
             val rs = directionsRoutes
@@ -562,7 +566,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 RouteLayer.drawRoutes(mapController, ordered, fitAndReveal = false, labels = routeLabels(ordered))
             }
         }
-        val exitDirections: () -> Unit = { directionsRoutes = null; directionsError = null; stops.value = emptyList(); RouteLayer.clear(mapController) }
+        val exitDirections: () -> Unit = { directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList(); RouteLayer.clear(mapController) }
         // GO keeps the consumer Apple route alive. The native sheets hide while the same WebView receives progress,
         // navigation-arrow, heading-follow, gesture-pause, recenter, and compass updates beneath NavOverlay.
         val startNav: () -> Unit = {
@@ -669,12 +673,12 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                         val dr = directionsRoutes ?: lastDir
                         if (dr != null) DirectionsBody(cardPlace, dr, selectedRoute, dirMode,
                             onMode = { dirMode = it; recomputeDirections() }, onSelect = selectRoute, onGo = startNav,
-                            stopCount = stops.value.size, routeError = directionsError,
+                            stopCount = stops.value.size, stopLabels = stopLabels.value, routeError = directionsError,
                             // addStopRow — blue "+ Add Stop" row in the iOS-style From/To card; opens search and appends.
                             onAddStop = { editingStopIndex = stops.value.size; searchActive = true },
-                            onRemoveStop = { i -> stops.value = stops.value.toMutableList().also { if (i in it.indices) it.removeAt(i) }; recomputeDirections() },
+                            onRemoveStop = { i -> stops.value = stops.value.toMutableList().also { if (i in it.indices) it.removeAt(i) }; stopLabels.value = stopLabels.value.toMutableList().also { if (i in it.indices) it.removeAt(i) }; recomputeDirections() },
                             onEditStop = { i -> editingStopIndex = i; searchActive = true },
-                            onReorderStop = { from, to -> stops.value = stops.value.toMutableList().also { if (from in it.indices) { val s = it.removeAt(from); it.add(to.coerceIn(0, it.size), s) } }; recomputeDirections() },
+                            onReorderStop = { from, to -> stops.value = stops.value.toMutableList().also { if (from in it.indices) { val s = it.removeAt(from); it.add(to.coerceIn(0, it.size), s) } }; stopLabels.value = stopLabels.value.toMutableList().also { if (from in it.indices) { val s = it.removeAt(from); it.add(to.coerceIn(0, it.size), s) } }; recomputeDirections() },
                             departOffsetMin = departOffsetMin, onDepart = { departOffsetMin = it },
                             avoidTolls = avoidTolls, avoidHighways = avoidHighways,
                             onAvoid = { t, h -> avoidTolls = t; avoidHighways = h; recomputeDirections() },
@@ -686,6 +690,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         val closeBrowse = {
             browseRequestId++
             browseState = null
+            mapController.resetBrowsePage()
         }
         androidx.compose.animation.AnimatedVisibility(
             visible = browseState != null && place == null && !navMode,
@@ -724,10 +729,9 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 navMode -> {   // leave turn-by-turn: flatten the map back to the overview, restore the planner
                     navMode = false
                     mapController.clearNavigation()
-                    mapController.centerOn(mapController.center(), rotation = 0.0)
                     placeSheet.goTo(1)
                 }
-                directionsRoutes != null -> { directionsRoutes = null; directionsError = null; RouteLayer.clear(mapController) }
+                directionsRoutes != null -> { directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList(); RouteLayer.clear(mapController) }
                 else -> dismissCard()
             }
         }
@@ -950,7 +954,6 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 onExit = {
                     navMode = false
                     mapController.clearNavigation()
-                    mapController.centerOn(mapController.center(), rotation = 0.0)
                     placeSheet.goTo(1)
                 },
             )
@@ -977,6 +980,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                         val updated = updatedRouteStops(stops.value, idx, MapCoordinate(p.lat, p.lon))
                         if (updated != null) {
                             stops.value = updated
+                            stopLabels.value = updatedStopLabels(stopLabels.value, idx, p.name) ?: stopLabels.value
                             directionsSheet.goTo(1)
                             recomputeDirections()
                         } else DiagLog.log("DIRECTIONS", "event=invalid_stop_index", "index=$idx", "size=${stops.value.size}")

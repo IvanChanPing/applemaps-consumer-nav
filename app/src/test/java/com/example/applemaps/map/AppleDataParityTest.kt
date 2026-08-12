@@ -15,6 +15,42 @@ class AppleDataParityTest {
         )
     }
 
+    @Test fun placeParserMapsAirportPhotoCategoriesDescriptionAndNestedPlaces() {
+        val shell = """
+          {"initialState":{"placeCache":{"airport":{"component":[
+            {"type":"COMPONENT_TYPE_ENTITY","value":[{"entity":{"name":[{"stringValue":"Helsinki Airport"}],"localizedCategory":[{"level":2,"localizedName":[{"stringValue":"Airport"}]}]}}]},
+            {"type":"COMPONENT_TYPE_PLACE_INFO","value":[{"placeInfo":{"center":{"lat":60.3172,"lng":24.9633}}}]},
+            {"type":"COMPONENT_TYPE_CATEGORIZED_PHOTOS","value":[
+              {"categorizedPhotos":{"categoryName":[{"stringValue":"Exterior"}],"photo":[{"photo":{"photoVersion":[{"url":"https://is1-ssl.mzstatic.com/image/thumb/exterior/{w}x{h}bb.{f}","urlType":"URL_TYPE_AMP_TEMPLATE"}]}}]}},
+              {"categorizedPhotos":{"categoryName":[{"stringValue":"Interior"}],"photo":[{"photo":{"photoVersion":[{"url":"https://is1-ssl.mzstatic.com/image/thumb/interior/320x320bb.jpg","urlType":"URL_TYPE_REGULAR"}]}}]}},
+              {"categorizedPhotos":{"categoryName":[{"stringValue":"All Photos"}],"photo":[{"photo":{"photoVersion":[{"url":"https://is1-ssl.mzstatic.com/image/thumb/all/320x320bb.jpg","urlType":"URL_TYPE_REGULAR"}]}}]}}
+            ]},
+            {"type":"COMPONENT_TYPE_TEXT_BLOCK","value":[{"textBlock":{"title":[{"stringValue":"Wikipedia"}],"text":[{"stringValue":"Finland's primary international airport."}]}}]},
+            {"type":"COMPONENT_TYPE_TEMPLATE_PLACE","value":[{"templatePlace":{"templateData":[
+              {"title":[{"stringValue":"Hilton Helsinki Airport"}]},{"title":[{"stringValue":"P3 Parking"}]}
+            ]}}]}
+          ]}}}}
+        """.trimIndent()
+        val place = ApplePlaceClient.parsePlace(
+            "Airport",
+            0.0,
+            0.0,
+            """<script id="shell-props" type="application/json">$shell</script>""",
+        )
+        assertEquals("Helsinki Airport", place?.name)
+        assertEquals("Finland's primary international airport.", place?.description)
+        assertEquals(listOf("Exterior", "Interior", "All Photos"), place?.photoLabels)
+        assertEquals(
+            listOf(
+                "https://is1-ssl.mzstatic.com/image/thumb/exterior/1200x1200bb.jpg",
+                "https://is1-ssl.mzstatic.com/image/thumb/interior/320x320bb.jpg",
+                "https://is1-ssl.mzstatic.com/image/thumb/all/320x320bb.jpg",
+            ),
+            place?.photoUrls,
+        )
+        assertEquals(listOf("Hilton Helsinki Airport", "P3 Parking"), place?.alsoHere)
+    }
+
     @Test fun coverageParserPreservesUnsignedIdsCoordinatesAndSixCalibrations() {
         val lens = GroundMetadataTileOuterClass.CameraMetadata.LensProjection.newBuilder()
             .setFovS(2.1).setFovH(1.8).setCy(0.3).build()

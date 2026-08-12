@@ -83,7 +83,7 @@ fun HomeFrontPage(
             Text(error, color = c.glyphMuted, fontSize = 14.sp, modifier = Modifier.padding(vertical = 16.dp))
         }
         Spacer(Modifier.height(12.dp))
-        content?.let { home ->
+        content?.takeIf { it.guides.isNotEmpty() }?.let { home ->
         AppleAppearOnce(6) {
         Column {
             Text(home.guideTitle, color = c.glyphDefault, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,

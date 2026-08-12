@@ -113,7 +113,7 @@ class ConsumerMapController(private val context: Context) : LocationListener {
 
     fun onResume() {
         resumed = true
-        webView?.onResume()
+        if (webView == null && container != null) recreateRenderer() else webView?.onResume()
         updateLocationSubscription()
     }
 
@@ -132,6 +132,12 @@ class ConsumerMapController(private val context: Context) : LocationListener {
     }
 
     fun reload() = recreateRenderer()
+
+    /** Returns the hidden Apple page to its neutral map state after a native browse tray is dismissed. */
+    fun resetBrowsePage() {
+        if (!ready) return
+        main.post { webView?.loadUrl(CONSUMER_URL) }
+    }
 
     /** Navigates the hidden consumer page to Apple's matching category state so its native map markers stay in sync. */
     fun showHomeCategory(label: String): Boolean {
@@ -515,7 +521,15 @@ private val CONSUMER_NAV_SCRIPT = """
   const style = document.createElement('style');
   style.id = 'consumer-nav-style';
   style.textContent = `
-    #shell-navigation,#shell-tray,#shell-map-controls{display:none!important}
+    #shell-navigation,#shell-tray{display:none!important}
+    #shell-map-controls{display:block!important}
+    #shell-map-controls .mw-controls-container,
+    #shell-map-controls #ttr-control-container,
+    #shell-map-controls .mw-zoom-controls,
+    #shell-map-controls .mw-legal-links,
+    #shell-map-controls .mw-look-around{display:none!important}
+    #shell-map-controls .mw-top-right-controls-container{pointer-events:none}
+    #shell-map-controls .mw-compass{display:block!important;pointer-events:auto}
     .consumer-map-node{position:fixed;z-index:2147483000;pointer-events:auto;transform:translate(-50%,-50%)}
     #consumer-user{width:18px;height:18px;border:3px solid white;border-radius:50%;background:#0a84ff;box-shadow:0 1px 4px rgba(0,0,0,.35);pointer-events:none}
     #consumer-nav-arrow{width:48px;height:48px;pointer-events:none;transform-origin:50% 50%}

@@ -1,6 +1,15 @@
 package com.example.applemaps.nav
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.os.Build
+import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.example.applemaps.map.ConsumerMapController
 import com.example.applemaps.map.MapCoordinate
 import com.example.applemaps.map.RouteRepository
@@ -9,9 +18,12 @@ import com.stadiamaps.ferrostar.core.CustomRouteProvider
 import com.stadiamaps.ferrostar.core.FerrostarCore
 import com.stadiamaps.ferrostar.core.NavigationState
 import com.stadiamaps.ferrostar.core.http.OkHttpClientProvider
-import com.stadiamaps.ferrostar.core.location.AndroidLocationProvider
+import com.stadiamaps.ferrostar.core.location.NavigationLocationProviding
 import com.stadiamaps.ferrostar.core.location.toUserLocation
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.callbackFlow
 import okhttp3.OkHttpClient
 import org.json.JSONObject
 import uniffi.ferrostar.CourseFiltering
@@ -34,7 +46,7 @@ import uniffi.ferrostar.stepAdvanceDistanceToEndOfStep
  *
  * WHAT: wraps a [FerrostarCore] that (a) fetches routes via a [CustomRouteProvider] which re-uses the
  *   existing keyless OSRM endpoint ([RouteRepository.osrmRawJson], polyline6 + steps) and parses it with
- *   uniffi's [createRouteFromOsrm]; (b) tracks real GPS via [AndroidLocationProvider]; (c) speaks
+ *   uniffi's [createRouteFromOsrm]; (b) tracks the freshest available fused/GPS/network fix; (c) speaks
  *   instructions via [AndroidTtsObserver]. Exposes [state] and small accessors so the UI can follow the
  *   trip (snapped location, bearing, progress, current instruction, route geometry).
  * HOW USED: caller does `remember { NavEngine(context) }`, `onStart()`/`onDestroy()` for TTS lifecycle,
@@ -43,7 +55,7 @@ import uniffi.ferrostar.stepAdvanceDistanceToEndOfStep
  */
 class NavEngine(private val context: Context) {
 
-    private val locationProvider = AndroidLocationProvider(context)
+    private val locationProvider = ResilientNavigationLocationProvider(context)
     private val tts = AndroidTtsObserver(context)
 
     // Which OSRM profile the CustomRouteProvider should fetch (car/bike/foot); set by start() before getRoutes.
@@ -150,4 +162,65 @@ class NavEngine(private val context: Context) {
 
     val routeGeometry: List<MapCoordinate>
         get() = state.value.routeGeometry.map { MapCoordinate(it.lat, it.lng) }
+}
+
+/**
+ * Ferrostar's stock provider binds to one preferred Android provider. This implementation observes every enabled
+ * provider and chooses the freshest fix, so an enabled fused provider with no sample cannot mask a live GPS fix.
+ */
+private class ResilientNavigationLocationProvider(context: Context) : NavigationLocationProviding {
+    private val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+    private val appContext = context.applicationContext
+
+    private fun hasPermission(): Boolean =
+        ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private fun enabledProviders(): List<String> {
+        val available = locationManager.allProviders.toSet()
+        return buildList {
+            if (Build.VERSION.SDK_INT >= 31) add(LocationManager.FUSED_PROVIDER)
+            add(LocationManager.GPS_PROVIDER)
+            add(LocationManager.NETWORK_PROVIDER)
+            add(LocationManager.PASSIVE_PROVIDER)
+        }.distinct().filter { provider ->
+            provider in available && runCatching { locationManager.isProviderEnabled(provider) }.getOrDefault(false)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    override suspend fun lastLocation(): Location? {
+        if (!hasPermission()) return null
+        return enabledProviders().mapNotNull { provider ->
+            runCatching { locationManager.getLastKnownLocation(provider) }.getOrNull()
+        }.maxByOrNull { location ->
+            if (Build.VERSION.SDK_INT >= 17) location.elapsedRealtimeNanos else location.time * 1_000_000L
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    override fun locationUpdates(intervalMillis: Long): Flow<Location> = callbackFlow {
+        if (!hasPermission()) {
+            close()
+            return@callbackFlow
+        }
+        lastLocation()?.let { trySend(it) }
+        val listener = LocationListener { location -> trySend(location) }
+        val registered = enabledProviders().count { provider ->
+            runCatching {
+                locationManager.requestLocationUpdates(
+                    provider,
+                    intervalMillis.coerceAtLeast(0L),
+                    0f,
+                    listener,
+                    Looper.getMainLooper(),
+                )
+            }.isSuccess
+        }
+        if (registered == 0) {
+            close()
+            return@callbackFlow
+        }
+        awaitClose { runCatching { locationManager.removeUpdates(listener) } }
+    }
 }

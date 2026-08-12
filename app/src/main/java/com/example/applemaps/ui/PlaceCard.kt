@@ -110,7 +110,11 @@ fun PlaceCardHeader(place: Place, onDirections: () -> Unit = {}, onClose: () -> 
                 // P1 3.3: the More menu pops with the extracted iOS overshoot (PopoverPop) instead of Material's
                 // DropdownMenu motion; the Popup stays mounted until the exit finishes (currentState catches up).
                 if (moreState.currentState || moreState.targetState) {
-                    androidx.compose.ui.window.Popup(alignment = Alignment.TopEnd, onDismissRequest = { moreState.targetState = false }) {
+                    androidx.compose.ui.window.Popup(
+                        alignment = Alignment.TopEnd,
+                        properties = androidx.compose.ui.window.PopupProperties(focusable = true),
+                        onDismissRequest = { moreState.targetState = false },
+                    ) {
                         com.example.applemaps.ui.components.PopoverPop(moreState) {
                             // white rounded menu card with soft shadow — same rows the DropdownMenu had
                             Column(Modifier.shadow(8.dp, RoundedCornerShape(12.dp)).clip(RoundedCornerShape(12.dp)).background(Color.White)) {

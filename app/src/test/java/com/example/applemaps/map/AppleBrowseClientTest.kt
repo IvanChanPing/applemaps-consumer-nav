@@ -51,13 +51,15 @@ class AppleBrowseClientTest {
         assertEquals(listOf("22", "11"), result?.guideIds)
     }
 
-    @Test fun homeParserRejectsMissingGuideSection() {
+    @Test fun homeParserKeepsValidCategoriesWhenRegionHasNoGuides() {
         val raw = """{"status":"STATUS_SUCCESS","globalResult":{"mapsSearchHomeResult":{"mapsSearchHomeSection":[
           {"name":"Near Me","searchBrowseCategorySuggestionResult":{"category":[
             {"shortDisplayString":"Coffee","popularDisplayToken":"Coffee Shops"}
           ]}}
         ]}}}"""
-        assertNull(AppleBrowseClient.parseHomeResponse(raw))
+        val result = AppleBrowseClient.parseHomeResponse(raw)
+        assertEquals(listOf("Coffee"), result?.categories?.map { it.label })
+        assertEquals(emptyList<String>(), result?.guideIds)
     }
 
     @Test fun guideParserReadsNativeTrayFieldsAndRegularHero() {

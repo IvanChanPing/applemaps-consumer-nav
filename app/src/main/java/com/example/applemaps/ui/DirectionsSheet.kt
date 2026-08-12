@@ -125,7 +125,7 @@ fun DirectionsHeader(onShare: () -> Unit, onClose: () -> Unit) {
 fun DirectionsBody(
     place: Place, routes: List<Route>, selected: Int, mode: String,
     onMode: (String) -> Unit, onSelect: (Int) -> Unit, onGo: () -> Unit,
-    stopCount: Int = 0, onAddStop: () -> Unit = {}, onRemoveStop: (Int) -> Unit = {}, onEditStop: (Int) -> Unit = {},
+    stopCount: Int = 0, stopLabels: List<String> = emptyList(), onAddStop: () -> Unit = {}, onRemoveStop: (Int) -> Unit = {}, onEditStop: (Int) -> Unit = {},
     onReorderStop: (Int, Int) -> Unit = { _, _ -> },
     departOffsetMin: Int = 0, onDepart: (Int) -> Unit = {},
     avoidTolls: Boolean = false, avoidHighways: Boolean = false, onAvoid: (Boolean, Boolean) -> Unit = { _, _ -> },
@@ -135,7 +135,7 @@ fun DirectionsBody(
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         ModeToggle(mode, onMode)
         Spacer(Modifier.height(14.dp))
-        FromToCard(place, stopCount, onAddStop, onRemoveStop, onEditStop, onReorderStop, showAddStop = mode == "Drive")
+        FromToCard(place, stopCount, stopLabels, onAddStop, onRemoveStop, onEditStop, onReorderStop, showAddStop = mode == "Drive")
         Spacer(Modifier.height(14.dp))
         Row {   // Apple shows the "Now" departure-time pill ONLY for driving; walking/cycling get Avoid only
             if (mode == "Drive") { NowPill(departOffsetMin, onDepart); Spacer(Modifier.width(10.dp)) }
@@ -272,8 +272,9 @@ private fun ModeToggle(selected: String, onMode: (String) -> Unit) {
     }
 }
 
+/** Keeps selected stop names beside their route coordinates so the planner never replaces them with generic labels. */
 @Composable
-private fun FromToCard(place: Place, stopCount: Int, onAddStop: () -> Unit, onRemoveStop: (Int) -> Unit = {}, onEditStop: (Int) -> Unit = {}, onReorderStop: (Int, Int) -> Unit = { _, _ -> }, showAddStop: Boolean = true) {
+private fun FromToCard(place: Place, stopCount: Int, stopLabels: List<String>, onAddStop: () -> Unit, onRemoveStop: (Int) -> Unit = {}, onEditStop: (Int) -> Unit = {}, onReorderStop: (Int, Int) -> Unit = { _, _ -> }, showAddStop: Boolean = true) {
     val strideP = with(LocalDensity.current) { 49.dp.toPx() }   // one row's height → how many rows a drag has crossed
     var dragIdx by remember { mutableStateOf<Int?>(null) }
     var dragDy by remember { mutableStateOf(0f) }
@@ -325,7 +326,7 @@ private fun FromToCard(place: Place, stopCount: Int, onAddStop: () -> Unit, onRe
                 visibleState = remember { MutableTransitionState(false).apply { targetState = true } },
                 enter = fadeIn(tween(200, easing = AppleEasing.Standard)) + expandVertically(tween(250, easing = AppleEasing.ExpoOut)),
             ) {
-                Column { StopRow("Stop ${i + 1}", { onRemoveStop(i) }, { onEditStop(i) }, handleMod, rowMod); Divider() }
+                Column { StopRow(stopLabels.getOrElse(i) { "Stop ${i + 1}" }, { onRemoveStop(i) }, { onEditStop(i) }, handleMod, rowMod); Divider() }
             }
         }
         FieldRow(R.drawable.ic_location_fill, Color(0xFFFF3B30), place.name, handle = true)

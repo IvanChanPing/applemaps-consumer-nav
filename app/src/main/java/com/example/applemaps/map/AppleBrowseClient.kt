@@ -121,7 +121,6 @@ internal object AppleBrowseClient {
                 }
             }
         }.awaitAll().filterNotNull()
-        if (guides.isEmpty()) return@coroutineScope null
         AppleHomeContent(
             categoryTitle = seed.categoryTitle,
             categories = seed.categories,
@@ -192,7 +191,7 @@ internal object AppleBrowseClient {
             }
         }
         return AppleHomeSeed(categoryTitle, categories, guideTitle, guideIds)
-            .takeIf { it.categories.isNotEmpty() && it.guideIds.isNotEmpty() }
+            .takeIf { it.categories.isNotEmpty() }
     }
 
     internal fun parseGuideHtml(curatedId: String, html: String): AppleGuide? {
