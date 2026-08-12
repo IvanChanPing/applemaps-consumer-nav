@@ -1,0 +1,10 @@
+HTTP/2 200 
+accept-ranges: bytes
+cache-control: no-cache
+content-type: application/vnd.android.package-archive
+etag: "tjmrazg9oeu"
+last-modified: Wed, 12 Aug 2026 00:13:47 GMT
+server: Caddy
+content-length: 27325398
+date: Wed, 12 Aug 2026 00:13:55 GMT
+

@@ -1,5 +1,9 @@
 # Changelog
 
+- 2026-08-12 — Added the canonical v0.10 debug APK and the complete v0.9 UI-verification evidence set to Git:
+  16 screenshots, the served and independently downloaded APK copies, and the captured HTTP response headers. This
+  tracking-only release changes no application source or runtime behavior.
+
 - 2026-08-12 — Main-page category and Guide buttons now open their native Apple-data trays without navigating the
   mounted consumer map WebView. Opening or closing Restaurants, Parking, and the other home browse actions therefore
   preserves the existing map session, camera, tiles, and annotations instead of reloading `maps.apple.com`.
