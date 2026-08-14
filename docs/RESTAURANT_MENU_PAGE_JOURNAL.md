@@ -6,8 +6,8 @@
 - DONE (verified): The exact v0.14 APK was installed on Redroid; real UI input opened Maps, searched for Sisters, opened its place card, and tapped Menu. The Overview/Menu layout and explicit unavailable-source state rendered without a process crash or ANR signature.
 - TEST LIMIT: Yelp blocked the emulator's direct network route, so loaded rows, section filters, and menu scrolling are parser/build verified but physical-network UI-unverified.
 - DONE (verified): The canonical APK is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-restaurant-menu-debug.apk`; a fresh HTTPS download returned HTTP 200, 237,670,588 bytes, and the exact source SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
-- IN PROGRESS: Run the scoped Codex-owned finalize workflow and verify its log plus Git state.
-- NEXT STEP: Finalize only the listed restaurant-menu source, tests, docs, changelog, metadata, and canonical root APK; then read back the resulting commit and working tree.
+- DONE (verified): Codex-owned scoped finalization created on-box commit `f39b1c3523e7a1ba0659bd2739efc0cb4a662bdc` (`Add source-backed restaurant menu page`) containing exactly the 11 feature, test, documentation, metadata, and canonical APK paths; no push was requested or performed.
+- NEXT STEP: User installs the published APK and opens a restaurant whose menu source is reachable from their network; loaded rows/filtering remain the only explicit physical-network UI verification gap.
 - KEY PATHS: `app/src/main/java/com/example/applemaps/map/Place.kt`, `app/src/main/java/com/example/applemaps/map/ApplePlaceClient.kt`, `app/src/main/java/com/example/applemaps/ui/PlaceCard.kt`.
 
 ### 2026-08-14 UTC — Target and data gap established
@@ -62,3 +62,8 @@
 ### 2026-08-14 UTC — HTTPS deliverable verified
 - VERIFIED: The canonical APK was copied to the existing Caddy static directory as `applemaps-consumer-nav-restaurant-menu-debug.apk`; source and served copy are both 237,670,588 bytes with SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
 - VERIFIED: Downloading `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-restaurant-menu-debug.apk` returned HTTP 200 and 237,670,588 bytes; the downloaded SHA-256 matches the canonical root APK exactly.
+
+### 2026-08-14 UTC — Scoped finalization verified
+- VERIFIED: `/root/.codex/tools/hk/hk-finalize.sh` completed successfully and its log records commit `f39b1c3` on branch `hk/fix-consumer-map-directions-and-navigati` for the 11 explicitly scoped paths.
+- VERIFIED: `git show` reports the source client, models, Apple link parser, UI, lifecycle wiring, two test files, changelog/version metadata, journal, and canonical root APK in that commit. The APK is Git-tracked despite the repository's local exclude rule.
+- VERIFIED: No GitHub push was requested or performed.
