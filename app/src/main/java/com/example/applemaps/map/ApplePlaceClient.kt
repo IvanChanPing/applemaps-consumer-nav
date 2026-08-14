@@ -167,6 +167,7 @@ internal object ApplePlaceClient {
         val about = parseAbout(components, ::componentValue)
         val relatedPlaces = parseRelatedPlaces(components["COMPONENT_TYPE_TEMPLATE_PLACE"])
         val airportDetails = parseAirportDetails(components)
+        val menuUrl = parseMenuUrl(components["COMPONENT_TYPE_QUICK_LINK"])
 
         return Place(
             name = firstString(entity.opt("name")) ?: query,
@@ -198,7 +199,23 @@ internal object ApplePlaceClient {
             alsoHere = relatedPlaces.map(RelatedPlace::name),
             relatedPlaces = relatedPlaces,
             airportDetails = airportDetails,
+            menuUrl = menuUrl,
         )
+    }
+
+    /** Returns only Apple's explicit HTTPS “Menu” quick link; order/delivery links are intentionally excluded. */
+    private fun parseMenuUrl(component: JSONObject?): String? {
+        val values = component?.optJSONArray("value") ?: return null
+        for (valueIndex in 0 until values.length()) {
+            val links = values.optJSONObject(valueIndex)?.optJSONObject("quickLink")
+                ?.optJSONArray("quickLinkItem") ?: continue
+            for (linkIndex in 0 until links.length()) {
+                val link = links.optJSONObject(linkIndex) ?: continue
+                if (!firstString(link.opt("title")).equals("Menu", ignoreCase = true)) continue
+                return link.optString("url").trim().takeIf { it.startsWith("https://") }
+            }
+        }
+        return null
     }
 
     private data class CategorizedPhotos(val albums: List<PlacePhotoAlbum>)

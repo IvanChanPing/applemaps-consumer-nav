@@ -17,8 +17,8 @@ android {
         applicationId = "com.example.applemaps.consumernav"
         minSdk = 29
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.13-vela-navigation-screen"
+        versionCode = 13
+        versionName = "0.14-restaurant-menus"
         // On-device Google Routes API key (route planning). Supply via `-PROUTES_API_KEY=...` or gradle.properties.
         buildConfigField("String", "ROUTES_API_KEY", "\"${project.findProperty("ROUTES_API_KEY") ?: ""}\"")
         // Google Places API key (place details + photos). Falls back to ROUTES_API_KEY so one key with both APIs enabled works.

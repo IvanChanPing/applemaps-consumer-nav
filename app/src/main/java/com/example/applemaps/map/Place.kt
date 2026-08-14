@@ -46,6 +46,23 @@ data class PlacePhoto(
 data class PlacePhotoAlbum(val title: String, val photos: List<PlacePhoto>)
 data class PlaceAmenity(val name: String, val symbolName: String? = null)
 
+data class RestaurantMenuItem(
+    val name: String,
+    val description: String? = null,
+    val price: String? = null,
+    val imageUrl: String? = null,
+    val sourceUrl: String? = null,
+)
+
+data class RestaurantMenuSection(val name: String, val items: List<RestaurantMenuItem>)
+
+data class RestaurantMenu(
+    val name: String? = null,
+    val sourceUrl: String,
+    val sourceName: String,
+    val sections: List<RestaurantMenuSection>,
+)
+
 data class RelatedPlace(
     val id: String,
     val name: String,
@@ -107,6 +124,8 @@ data class Place(
     val relatedPlaces: List<RelatedPlace> = emptyList(),
     val airportDetails: AirportDetails? = null,
     val dataAttributions: List<PlaceAttribution> = emptyList(),
+    val menuUrl: String? = null,
+    val restaurantMenu: RestaurantMenu? = null,
 ) {
     val coords: String
         get() = "%.5f° %s, %.5f° %s".format(abs(lat), if (lat >= 0) "N" else "S", abs(lon), if (lon >= 0) "E" else "W")
@@ -398,6 +417,17 @@ object PlaceRepository {
             throw e
         } catch (e: Exception) {
             DiagLog.log("APPLEPLACE", "event=failed", "error=${e.javaClass.simpleName}")
+            null
+        }
+    }
+
+    /** Loads the selected restaurant's semantic menu separately so a blocked menu never delays its place card. */
+    suspend fun fetchRestaurantMenu(sourceUrl: String): RestaurantMenu? = withContext(Dispatchers.IO) {
+        try {
+            RestaurantMenuClient.fetch(sourceUrl)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
             null
         }
     }

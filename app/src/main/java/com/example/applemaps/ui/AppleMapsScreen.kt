@@ -90,6 +90,8 @@ import kotlinx.coroutines.launch
  * their corresponding hidden consumer page keeps Apple's native result markers on the map.
  * Large venues retain Apple's photo albums, attributed About and amenity content, related-place list, directory,
  * browse categories, venue bounds, and mode-specific routing entrances in that same native place-card flow.
+ * Restaurants with an Apple Menu quick link load its semantic sections independently and expose a native Menu tab;
+ * changing the selected place cancels stale menu work and a source failure stays visible without blocking Overview.
  * Phone rendering for this consumer-guidance revision remains device-unverified until its APK is exercised.
  */
 /** Preserves the former 0.16-per-60Hz-frame follow curve at every display refresh rate. */
@@ -160,6 +162,8 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var lookSourceBounds by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var placeLookLoading by remember { mutableStateOf(false) }
     var placeLoading by remember { mutableStateOf(false) }   // show a spinner in the card body until the full data loads
+    var menuLoading by remember { mutableStateOf(false) }
+    var menuUnavailable by remember { mutableStateOf(false) }
     var directionsRoutes by remember { mutableStateOf<List<com.example.applemaps.map.Route>?>(null) }   // route options while in directions mode
     var directionsError by remember { mutableStateOf<String?>(null) }
     var routeRequestId by remember { mutableStateOf(0) }
@@ -679,6 +683,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                         AppleCardEnter(cardPlace.name) { when {   // P1 3.2: body fades/rises on a NEW place too
                             isStation && st != null -> StationCardBody(st)
                             else -> PlaceCardBody(cardPlace, onDirections = startDirections, loading = placeLoading,
+                                menuLoading = menuLoading, menuUnavailable = menuUnavailable,
                                 onRelatedPlaceClick = { openRelatedPlace(cardPlace, it) },
                                 onAirportCategoryClick = { openAirportCategory(cardPlace, it) },
                                 distanceMiles = run {   // miles from the user's real location to the place → DISTANCE ribbon column
@@ -817,6 +822,19 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             }
         }
         LaunchedEffect(place) { if (place != null) placeSheet.goTo(1) }
+        LaunchedEffect(place?.menuUrl) {
+            menuLoading = false
+            menuUnavailable = false
+            val sourceUrl = place?.menuUrl ?: return@LaunchedEffect
+            if (place?.restaurantMenu == null) {
+                menuLoading = true
+                val menu = PlaceRepository.fetchRestaurantMenu(sourceUrl)
+                if (place?.menuUrl == sourceUrl) {
+                    if (menu != null) place = place?.copy(restaurantMenu = menu) else menuUnavailable = true
+                    menuLoading = false
+                }
+            }
+        }
         LaunchedEffect(place?.lat, place?.lon) {   // direct Apple lookup with Panoramax fallback
             placeLookPreparation?.cancel()
             placeLookPreparation = null

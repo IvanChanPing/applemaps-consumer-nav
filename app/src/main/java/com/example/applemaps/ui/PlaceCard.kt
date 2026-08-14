@@ -39,6 +39,8 @@ import com.example.applemaps.map.Place
 import com.example.applemaps.map.PlaceAccessPoint
 import com.example.applemaps.map.PlaceAmenity
 import com.example.applemaps.map.RelatedPlace
+import com.example.applemaps.map.RestaurantMenu
+import com.example.applemaps.map.RestaurantMenuItem
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
@@ -52,7 +54,10 @@ import kotlin.math.roundToInt
  * title 28sp/700 · subtitle 14sp ("Category · " + accent locality) · Directions 52dp with a white circular
  * badge/blue turn glyph · Share/Close 30dp
  * circles (bg rgba(199,199,199,0.36)) · Hours/Ratings/Accepts before media · "Details" 20sp/600 ·
- * platter cells (14sp title / 17sp content). Final ordering and clipping remain phone-UI unverified.
+ * platter cells (14sp title / 17sp content). Restaurants with an Apple menu quick link add native Overview/Menu
+ * tabs; Menu renders source-backed sections, prices, descriptions, and optional dish photos with explicit
+ * loading/unavailable states. Real emulator taps verify the tabs and unavailable state; loaded-row clipping remains
+ * physical-network UI-unverified because that emulator route cannot reach the source.
  */
 @Composable
 fun PlaceCardHeader(place: Place, onDirections: () -> Unit = {}, onClose: () -> Unit = {}) {
@@ -225,9 +230,12 @@ fun PlaceCardBody(
     onAirportCategoryClick: (AirportBrowseCategory) -> Unit = {},
     onDirections: () -> Unit = {},
     loading: Boolean = false,
+    menuLoading: Boolean = false,
+    menuUnavailable: Boolean = false,
     distanceMiles: Double? = null,
 ) {
     val c = LocalAppleColors.current
+    var selectedPage by remember(place.menuUrl) { mutableStateOf("Overview") }
     // P1 3.1: spinner → content CROSSFADES (150ms CSS ease-out, the traced .mw-card fade) instead of an instant swap
     androidx.compose.animation.Crossfade(loading,
         animationSpec = androidx.compose.animation.core.tween(150, easing = com.example.applemaps.ui.anim.AppleEasing.EaseOutStd),
@@ -238,6 +246,14 @@ fun PlaceCardBody(
         }
     } else {
     Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
+        if (place.menuUrl != null) {
+            // overviewMenuTabBar — two text tabs directly below the action row; blue 3dp underline marks the page.
+            OverviewMenuTabBar(selectedPage) { selectedPage = it }
+        }
+        if (selectedPage == "Menu" && place.menuUrl != null) {
+            RestaurantMenuPage(place.menuUrl, place.restaurantMenu, menuLoading, menuUnavailable)
+            return@Column
+        }
         // placeSummaryRibbon — HOURS | RATINGS | ACCEPTS directly below actions, before visual media.
         RibbonStrip(place, distanceMiles)
         // Photos — edge-to-edge horizontal scroller (traced sc-photo-item 173x217 r16, 20dp start inset)
@@ -299,6 +315,154 @@ fun PlaceCardBody(
         }
     }
     }
+    }
+}
+
+@Composable
+private fun OverviewMenuTabBar(selectedPage: String, onSelected: (String) -> Unit) {
+    val colors = LocalAppleColors.current
+    Row(Modifier.fillMaxWidth().padding(top = 14.dp)) {
+        listOf("Overview", "Menu").forEach { page ->
+            Column(
+                Modifier.weight(1f).clickable { onSelected(page) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text(
+                    page,
+                    color = if (selectedPage == page) Color(0xFF007AFF) else colors.glyphMuted,
+                    fontSize = 16.sp,
+                    fontWeight = if (selectedPage == page) FontWeight.SemiBold else FontWeight.Normal,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+                Box(
+                    Modifier.fillMaxWidth().height(3.dp)
+                        .background(if (selectedPage == page) Color(0xFF007AFF) else Color.Transparent),
+                )
+            }
+        }
+    }
+    HorizontalDivider(color = colors.borderMuted, thickness = 1.dp)
+}
+
+/** Native Menu page shown by the blue-underlined Menu tab in a restaurant's place-card sheet. */
+@Composable
+private fun RestaurantMenuPage(
+    sourceUrl: String,
+    menu: RestaurantMenu?,
+    loading: Boolean,
+    unavailable: Boolean,
+) {
+    val colors = LocalAppleColors.current
+    val context = LocalContext.current
+    fun openSource() {
+        runCatching {
+            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(sourceUrl)))
+        }
+    }
+    when {
+        loading || (menu == null && !unavailable) -> Box(
+            Modifier.fillMaxWidth().padding(vertical = 64.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // menuLoadingRing — centered muted progress ring while the restaurant's source page is being read.
+            androidx.compose.material3.CircularProgressIndicator(color = colors.glyphMuted, strokeWidth = 3.dp)
+        }
+        menu == null -> Column(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 36.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "Menu couldn't load",
+                color = colors.glyphDefault,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text("Open the restaurant's menu source instead.", color = colors.glyphMuted, fontSize = 15.sp)
+            Spacer(Modifier.height(18.dp))
+            // openOriginalMenuPill — rounded blue source action centered in the empty/error state.
+            Box(
+                Modifier.clip(RoundedCornerShape(20.dp)).background(Color(0xFF007AFF))
+                    .clickable { openSource() }.padding(horizontal = 20.dp, vertical = 10.dp),
+            ) { Text("Open menu", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold) }
+        }
+        else -> LoadedRestaurantMenu(menu, onOpenSource = ::openSource)
+    }
+}
+
+@Composable
+private fun LoadedRestaurantMenu(menu: RestaurantMenu, onOpenSource: () -> Unit) {
+    val colors = LocalAppleColors.current
+    var selectedSection by remember(menu) { mutableStateOf<String?>(null) }
+    val visibleSections = selectedSection?.let { selected -> menu.sections.filter { it.name == selected } } ?: menu.sections
+    if (menu.sections.size > 1) {
+        // menuSectionPills — horizontally scrolling gray rounded filters; All is selected initially.
+        Row(
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 20.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            (listOf<String?>(null) + menu.sections.map { it.name }).forEach { section ->
+                val selected = section == selectedSection
+                Box(
+                    Modifier.clip(RoundedCornerShape(10.dp))
+                        .background(if (selected) Color(0xFFE2E2E7) else Color(0xFFF2F2F7))
+                        .clickable { selectedSection = section }
+                        .padding(horizontal = 16.dp, vertical = 9.dp),
+                ) {
+                    Text(section ?: "All", color = colors.glyphDefault, fontSize = 15.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
+                }
+            }
+        }
+    } else {
+        Spacer(Modifier.height(16.dp))
+    }
+    Text("Menu", color = colors.glyphDefault, fontSize = 24.sp, fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(horizontal = 20.dp))
+    visibleSections.forEach { section ->
+        Text(
+            section.name.uppercase(), color = colors.glyphMuted, fontSize = 14.sp,
+            fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp,
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 8.dp),
+        )
+        Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+            section.items.forEachIndexed { index, item ->
+                RestaurantMenuItemRow(item)
+                if (index < section.items.lastIndex) HorizontalDivider(color = colors.borderMuted, thickness = 1.dp)
+            }
+        }
+    }
+    Text(
+        "Menu from ${menu.sourceName}", color = Color(0xFF007AFF), fontSize = 13.sp,
+        modifier = Modifier.clickable { onOpenSource() }.padding(horizontal = 20.dp, vertical = 20.dp),
+    )
+}
+
+@Composable
+private fun RestaurantMenuItemRow(item: RestaurantMenuItem) {
+    val colors = LocalAppleColors.current
+    Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.Top) {
+        Column(Modifier.weight(1f)) {
+            Text(item.name, color = colors.glyphDefault, fontSize = 17.sp, fontWeight = FontWeight.Medium)
+            item.description?.let {
+                Spacer(Modifier.height(5.dp))
+                Text(it, color = colors.glyphMuted, fontSize = 15.sp, lineHeight = 20.sp)
+            }
+            item.price?.let {
+                Spacer(Modifier.height(7.dp))
+                Text(it, color = colors.glyphDefault, fontSize = 17.sp)
+            }
+        }
+        item.imageUrl?.let { imageUrl ->
+            Spacer(Modifier.width(14.dp))
+            // squareDishPhoto — 92dp rounded photo aligned to the right edge of each source-backed menu row.
+            coil.compose.AsyncImage(
+                model = imageUrl,
+                contentDescription = item.name,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier.size(92.dp).clip(RoundedCornerShape(12.dp)).background(Color(0xFFF2F2F7)),
+            )
+        }
     }
 }
 

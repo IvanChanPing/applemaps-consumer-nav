@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-14 — 0.14 restaurant menu page
+
+- Restaurant place cards now expose a native Overview/Menu tab when Apple supplies an explicit Menu quick link.
+- Menu data is loaded independently from the place card through the source page's semantic schema.org Menu data, preserving real sections, dish names, descriptions, currency prices, item links, and optional path-matched photos without hardcoded samples.
+- Source loading is selection-scoped and bounded; changing restaurants cancels stale work, while unavailable or changed source pages show an explicit error with an Open menu action instead of delaying or breaking Overview.
+- Added parser coverage for array/object schema variants, missing optional fields, image association, price formatting, and documents without real items. Files: `RestaurantMenuClient.kt`, `Place.kt`, `ApplePlaceClient.kt`, `PlaceCard.kt`, `AppleMapsScreen.kt`, tests, and version metadata. Unit tests, Android lint, and debug assembly pass. Real emulator taps verified search → Sisters → Menu and the visible unavailable-source state; Yelp blocked that emulator route, so loaded rows/filtering remain parser-verified but physical-network UI-unverified. Canonical APK: 237,670,588 bytes; SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
+
 ## 2026-08-12 — 0.13 Vela navigation screen
 
 - GO now backgrounds the Apple WebView Activity and opens a dedicated Vela navigation Activity.

@@ -1,0 +1,64 @@
+## CURRENT STATE / NEXT STEP   (updated 2026-08-14 UTC)
+- GOAL: Add a native restaurant menu page to the consumer Apple Maps app, backed by actual restaurant menu data rather than sample rows.
+- DONE (verified): The live target is the clean `applemaps-consumer-nav` repository at `bee694d`; the older `applemaps-nav-lean` tree has extensive concurrent changes and is out of scope.
+- DONE (verified): `Place` has no menu model, `ApplePlaceClient.parsePlace` does not parse menu components, and the configured Google Places fields stop at place details/reviews/photos/price level.
+- DONE (verified): The menu model/client, Apple menu-link parsing, selection-scoped async loading, native Overview/Menu page, parser tests, version bump, and canonical root APK are present.
+- DONE (verified): The exact v0.14 APK was installed on Redroid; real UI input opened Maps, searched for Sisters, opened its place card, and tapped Menu. The Overview/Menu layout and explicit unavailable-source state rendered without a process crash or ANR signature.
+- TEST LIMIT: Yelp blocked the emulator's direct network route, so loaded rows, section filters, and menu scrolling are parser/build verified but physical-network UI-unverified.
+- DONE (verified): The canonical APK is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-restaurant-menu-debug.apk`; a fresh HTTPS download returned HTTP 200, 237,670,588 bytes, and the exact source SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
+- IN PROGRESS: Run the scoped Codex-owned finalize workflow and verify its log plus Git state.
+- NEXT STEP: Finalize only the listed restaurant-menu source, tests, docs, changelog, metadata, and canonical root APK; then read back the resulting commit and working tree.
+- KEY PATHS: `app/src/main/java/com/example/applemaps/map/Place.kt`, `app/src/main/java/com/example/applemaps/map/ApplePlaceClient.kt`, `app/src/main/java/com/example/applemaps/ui/PlaceCard.kt`.
+
+### 2026-08-14 UTC — Target and data gap established
+- VERIFIED: Git status in `applemaps-consumer-nav` is clean on branch `hk/fix-consumer-map-directions-and-navigati` at `bee694d`.
+- VERIFIED: The alternate `applemaps-nav-lean` worktree has many modified and untracked paths, so it is not a safe target for this request.
+- VERIFIED: The current `Place` data class contains rich place metadata but no menu section/item fields.
+- VERIFIED: `ApplePlaceClient.parsePlace` handles entity, rating, hours, amenities, reviews, categorized photos, related places, About text, and airport details; it has no menu parser.
+- VERIFIED: `app/build.gradle.kts` uses Google Places SDK 5.3.0, and the source field list contains no structured restaurant-menu field.
+- DECISION: Do not hardcode the photographed Sisters menu. A provider contract that returns actual restaurant-specific menu data must be proven before implementation.
+
+### 2026-08-14 UTC — Real Sisters menu contract verified
+- VERIFIED: The official Google Places SDK field reference exposes restaurant attributes but no structured menu sections/items; `MENU_FOR_CHILDREN` is only a Boolean.
+- VERIFIED: The real Apple Maps Sisters payload (`place-id=I83FC67094BF4BE15`) returned HTTP 200 and includes a `COMPONENT_TYPE_QUICK_LINK` titled `Menu` whose URL is the restaurant-specific Yelp menu page.
+- VERIFIED: The Apple payload itself does not contain structured dishes; it delegates to the menu URL.
+- VERIFIED: The linked Sisters page, fetched through a U.S. residential route after direct datacenter HTTP 403, contains a valid `schema.org/Menu` JSON-LD object with 2 sections and 10 real dishes, including descriptions, currency, prices, and item paths.
+- VERIFIED: The same mobile response associates dish paths with Yelp CDN photos. The Fried Chicken Sandwich image variants `60s`, `300s`, `o`, and `l` all returned HTTP 200; `300s` is a verified 300×300 JPEG suitable for the row design.
+- VERIFIED: A WARP-routed mobile request returned the complete page with HTTP 200, proving the failure is route-dependent rather than a universally inaccessible page.
+- DECISION: Use the semantic JSON-LD for menu text/prices and the same page's path-keyed image URLs for optional item photos. Never synthesize dishes or prices.
+
+### 2026-08-14 UTC — PRE-BUILD RISK PASS
+- ASSUMPTION — VERIFIED: Existing selection enrichment runs off the main thread through `PlaceRepository.fetchApplePlace` on `Dispatchers.IO`.
+- ASSUMPTION — VERIFIED: Both reachable place-selection entry points converge on the same `place` state and `PlaceCardBody`; a `LaunchedEffect` keyed by menu URL can cover both without duplicating fetch logic.
+- ASSUMPTION — VERIFIED: The manifest already declares `INTERNET` and `ACCESS_NETWORK_STATE`; no new permission is required.
+- UNKNOWN / FEASIBILITY RISK: Yelp may return 403, omit JSON-LD, alter HTML image markup, or provide object-vs-array schema variants. The client will use bounded timeouts, normalize object/array forms, tolerate missing offers/images, return no invented data, and expose failure in the menu page with an Open Original action.
+- PRECONDITION: A restaurant must expose an Apple quick link titled `Menu`. Without one, the Overview remains unchanged and no empty Menu tab is shown.
+- ALL ENTRY POINTS: Apple annotation selection (`AppleMapsScreen.kt` around the consumer bridge callback) and native search-result selection both assign `place`; one selection-scoped effect will fetch menus for either path and cancellation will prevent stale data from attaching to a newer place.
+- CROSS-CUTTING: Network work stays on `Dispatchers.IO`; request timeouts are bounded; selection changes cancel the coroutine; stale URL checks prevent cross-place updates; Compose state resets per menu URL; API 29 compatibility is retained; no physics animation is introduced.
+- OBSERVABILITY: The Menu page visibly distinguishes loading, unavailable, and loaded states. The unavailable state offers the source page rather than silently hiding a known menu link.
+- VERIFICATION REACHABILITY: Unit tests will cover the exact Sisters contract plus missing/mixed shapes and image matching. Build/lint will verify integration. Redroid real taps will verify the Overview→Menu click path and scrolling if its network route can load Yelp; otherwise the real UI will verify the visible failure/open-original path and the physical-network success path will remain explicitly unverified.
+- DECISION: Do not make menu retrieval part of initial place enrichment, because a blocked third-party menu must not hold the entire restaurant card spinner.
+
+### 2026-08-14 UTC — First verification attempt stopped before compilation
+- VERIFIED: The combined test/lint/assembly invocation exited 1 before resolving `:app:testDebugUnitTest` because this process had empty `ANDROID_HOME`/`ANDROID_SDK_ROOT` and the repository has no `local.properties`.
+- VERIFIED: `/opt/android-sdk` is a mounted-volume symlink with Android platform 36 and build-tools 36.0.0 present.
+- DECISION: Keep the repository unchanged for this environment-only condition and rerun with process-local `ANDROID_HOME=/opt/android-sdk` and `ANDROID_SDK_ROOT=/opt/android-sdk`.
+
+### 2026-08-14 UTC — Source/build verification passed
+- VERIFIED: With the process-local SDK variables, one combined `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` invocation returned `BUILD SUCCESSFUL in 4m 34s`.
+- VERIFIED: App compilation, unit tests (including the exact menu/quick-link contracts), Android lint, and debug assembly completed successfully.
+- VERIFIED: The Gradle APK and top-level `applemaps-consumer-nav-debug.apk` are byte-identical at 237,670,588 bytes, SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
+- VERIFIED: `aapt` reports package `com.example.applemaps.consumernav`, versionCode 13, versionName `0.14-restaurant-menus`, minSdk 29, targetSdk 36.
+- VERIFIED: The compiler emitted only three pre-existing warnings in untouched code regions; no new warning points to the menu implementation.
+- TEST LIMIT: No real UI click path has been exercised yet, so visual layout, menu-source loading on Redroid, section filters, and scrolling remain UI-unverified.
+
+### 2026-08-14 UTC — Real UI click path exercised
+- VERIFIED: Installed `applemaps-consumer-nav-debug.apk` returned `Success`; Android package state reports versionCode 13 and versionName `0.14-restaurant-menus`.
+- VERIFIED: Real launcher/search UI input opened `com.example.applemaps.consumernav`, searched `Sisters 900 Fulton Street Brooklyn`, selected the Sisters restaurant result, and rendered the place card with Overview and Menu tabs.
+- VERIFIED: Tapping Menu selected its blue underline and rendered `Menu couldn't load` plus the source fallback action. A screenshot and UI hierarchy were captured under `/root/agent-work/research/consumer-applemaps-menu/`.
+- VERIFIED: Post-click-path logcat contained no matching fatal-exception, process-crash, or ANR signature for the app, and the app process remained present.
+- TEST LIMIT: This Redroid network route cannot load Yelp, matching the previously observed direct-route block. Loaded menu rows, filter pills, dish-photo rendering, and vertical scrolling were therefore not exercised through a physical-network UI; the semantic parsing path is covered by the passing exact-contract unit tests.
+
+### 2026-08-14 UTC — HTTPS deliverable verified
+- VERIFIED: The canonical APK was copied to the existing Caddy static directory as `applemaps-consumer-nav-restaurant-menu-debug.apk`; source and served copy are both 237,670,588 bytes with SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
+- VERIFIED: Downloading `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-restaurant-menu-debug.apk` returned HTTP 200 and 237,670,588 bytes; the downloaded SHA-256 matches the canonical root APK exactly.

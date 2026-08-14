@@ -47,7 +47,11 @@ class AppleDataParityTest {
               {"location":{"lat":60.310,"lng":24.950},"walkingDirection":"ENTRY_EXIT"},
               {"location":{"lat":60.320,"lng":24.970},"drivingDirection":"ENTRY"}
             ]}}]},
-            {"type":"COMPONENT_TYPE_FACTOID","value":[{"factoid":{"entryType":"ELEVATION","number":55.0}}]}
+            {"type":"COMPONENT_TYPE_FACTOID","value":[{"factoid":{"entryType":"ELEVATION","number":55.0}}]},
+            {"type":"COMPONENT_TYPE_QUICK_LINK","value":[{"quickLink":{"quickLinkItem":[
+              {"title":"Order","url":"https://order.example/airport"},
+              {"title":"Menu","url":"https://restaurant.example/airport-menu"}
+            ]}}]}
           ]}}}}
         """.trimIndent()
         val place = ApplePlaceClient.parsePlace(
@@ -82,6 +86,7 @@ class AppleDataParityTest {
         assertEquals(listOf("Coffee Shops"), place?.airportDetails?.browseCategories?.last()?.subcategories)
         assertEquals(2, place?.airportDetails?.accessPoints?.size)
         assertEquals(55.0, place?.airportDetails?.elevationMeters ?: 0.0, 0.0)
+        assertEquals("https://restaurant.example/airport-menu", place?.menuUrl)
     }
 
     @Test fun coverageParserPreservesUnsignedIdsCoordinatesAndSixCalibrations() {
