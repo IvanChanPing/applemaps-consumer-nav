@@ -36,4 +36,11 @@ class BoxlessMapDataTest {
         assertTrue(mainSource.contains("preparation = lookViewerPreparation"))
         assertTrue(mainSource.contains("event=preloadUsed"))
     }
+
+    @Test fun mapUsesPlatformAndroidViewInputInsteadOfManualSiblingRelay() {
+        assertTrue(mainSource.contains("AndroidView("))
+        assertTrue(mainSource.contains("FrameLayout(context).also(controller::attachTo)"))
+        assertFalse(mainSource.contains("pointerInteropFilter(onTouchEvent = controller::dispatchTouchEvent)"))
+        assertFalse(mainSource.contains("setInputBottomInsetPx"))
+    }
 }

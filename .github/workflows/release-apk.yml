@@ -1,0 +1,69 @@
+# Builds the installable debug APK and publishes it as a GitHub Release asset.
+# Runs automatically for main and can also be started from the Actions page.
+name: Build and release APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Fetch pinned Vela runtimes
+        run: |
+          mkdir -p vendor/Vela/core/libs vela-core/libs vela-app-runtime/libs
+          for file in osmand-java.jar osmand-shared-jvm.jar gnu-trove-osmand.jar kxml2-vela.jar; do
+            curl --fail --location --retry 3 \
+              --output "vendor/Vela/core/libs/$file" \
+              "https://github.com/PimpinPumpkin/Vela/releases/download/obf-runtime/$file"
+          done
+          (
+            cd vendor/Vela
+            grep '  core/libs/.*\.jar$' ../../vela-upstream.sha256 | sha256sum --check -
+          )
+          cp vendor/Vela/core/libs/*.jar vela-core/libs/
+          curl --fail --location --retry 3 \
+            --output vela-app-runtime/libs/sherpa-onnx-1.13.3.aar \
+            https://github.com/PimpinPumpkin/Vela/releases/download/tts-runtime/sherpa-onnx-1.13.3.aar
+          echo '243ad797a3b6e75ebbeaf7a2ab4aec0777e7d71b730685abb762a120940b07b6  vela-app-runtime/libs/sherpa-onnx-1.13.3.aar' \
+            | sha256sum --check -
+
+      - name: Build APK
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+
+      - name: Stage APK
+        run: install -Dm644 app/build/outputs/apk/debug/app-debug.apk "$RUNNER_TEMP/applemaps-consumer-nav-debug.apk"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${GITHUB_RUN_NUMBER}" \
+            "$RUNNER_TEMP/applemaps-consumer-nav-debug.apk#Apple Maps Consumer Navigation APK" \
+            --target "$GITHUB_SHA" \
+            --title "APK build ${GITHUB_RUN_NUMBER}" \
+            --notes "Automated APK build from ${GITHUB_SHA}." \
+            --latest

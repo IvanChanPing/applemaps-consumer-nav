@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-08-14 — GitHub main integration
+
+- Integrated the v0.16 source branch with `main` while retaining the existing GitHub Release workflow and its AndroidView map-input regression coverage.
+- The release workflow now downloads and checksum-verifies the five intentionally untracked Vela runtime binaries before running unit tests, lint, assembly, and APK publication from a clean GitHub checkout.
+- Clean-index validation passed 47 app tests, lint, and debug assembly; the resulting top-level `applemaps-consumer-nav-debug.apk` is 237,686,968 bytes with SHA-256 `a9c52097becad952869c7023f7ae8f95d929c75dd1218bbc32a607623b488731`.
+
 ## 2026-08-14 — 0.16 source-backed place actions
 
 - Added conditional Reserve, Tickets, Order, and Showtimes buttons from Apple's action-data and quick-link payloads; actions without an HTTPS destination are omitted.
