@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-08-14 — 0.15 stacked restaurant menu sheet
+
+- Moved Menu from an in-place Overview/Menu transformation into the restaurant card's top action row, matching the five-button reference layout when Directions, Call, Website, Menu, and More are available.
+- Menu now opens in its own independently controlled sheet above the unchanged restaurant card, with its own close/back behavior, loading/error states, section filters, item rows, prices, descriptions, and available photos.
+- Menu retrieval starts when the separate sheet opens and still exposes the original source when that source blocks the current network route; no blocked-route bypass or fabricated content is implied.
+- Real emulator taps verified the five-button row, separate-sheet opening, X dismissal, Android Back dismissal, unchanged-card restoration, and blocked-source fallback without a crash/ANR signature. Loaded rows remain physical-network UI-unverified because Yelp blocked that emulator route. Canonical APK: 237,670,600 bytes; SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
+
 ## 2026-08-14 — 0.14 restaurant menu page
 
 - Restaurant place cards now expose a native Overview/Menu tab when Apple supplies an explicit Menu quick link.

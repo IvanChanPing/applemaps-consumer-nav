@@ -1,13 +1,18 @@
 ## CURRENT STATE / NEXT STEP   (updated 2026-08-14 UTC)
-- GOAL: Add a native restaurant menu page to the consumer Apple Maps app, backed by actual restaurant menu data rather than sample rows.
+- GOAL: Present source-backed restaurant menus in a separate Google-style sheet opened from a Menu action in the place card's top action row.
 - DONE (verified): The live target is the clean `applemaps-consumer-nav` repository at `bee694d`; the older `applemaps-nav-lean` tree has extensive concurrent changes and is out of scope.
 - DONE (verified): `Place` has no menu model, `ApplePlaceClient.parsePlace` does not parse menu components, and the configured Google Places fields stop at place details/reviews/photos/price level.
-- DONE (verified): The menu model/client, Apple menu-link parsing, selection-scoped async loading, native Overview/Menu page, parser tests, version bump, and canonical root APK are present.
-- DONE (verified): The exact v0.14 APK was installed on Redroid; real UI input opened Maps, searched for Sisters, opened its place card, and tapped Menu. The Overview/Menu layout and explicit unavailable-source state rendered without a process crash or ANR signature.
+- SUPERSEDED: v0.14's in-place Overview/Menu implementation was built and tested, then replaced by the user-requested v0.15 stacked-sheet interaction below.
 - TEST LIMIT: Yelp blocked the emulator's direct network route, so loaded rows, section filters, and menu scrolling are parser/build verified but physical-network UI-unverified.
 - DONE (verified): The canonical APK is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-restaurant-menu-debug.apk`; a fresh HTTPS download returned HTTP 200, 237,670,588 bytes, and the exact source SHA-256 `31d7411eb236dedda5d3a69c0dcf39880cfe7a3eaec5137d88e0e698ec10fdb4`.
 - DONE (verified): Codex-owned scoped finalization created on-box commit `f39b1c3523e7a1ba0659bd2739efc0cb4a662bdc` (`Add source-backed restaurant menu page`) containing exactly the 11 feature, test, documentation, metadata, and canonical APK paths; no push was requested or performed.
-- NEXT STEP: User installs the published APK and opens a restaurant whose menu source is reachable from their network; loaded rows/filtering remain the only explicit physical-network UI verification gap.
+- DONE (verified): The in-place tab was removed; Menu is now a conditional top-row action and opens an independently controlled sibling sheet above the unchanged place card.
+- DONE (verified): Unit tests, Android lint, and debug assembly passed for versionCode 14 / `0.15-stacked-restaurant-menu`; the canonical root APK is 237,670,600 bytes with SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
+- DONE (verified): The exact v0.15 root APK was installed on Redroid; real UI input showed Directions/Call/Website/Menu/More, opened Menu as an independent sheet, and restored the unchanged place card through both X and Android Back without a crash/ANR signature.
+- TEST LIMIT: Yelp blocked this emulator route, so the separate sheet's unavailable/source fallback is UI-verified; loaded item rows, category filtering, photos, and scrolling remain parser/build verified but physical-network UI-unverified.
+- DONE (verified): Final assembly succeeded; the exact v0.15 APK is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-stacked-menu-debug.apk`, and a fresh HTTPS download returned HTTP 200 with matching 237,670,600-byte size and SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
+- IN PROGRESS: Run scoped Codex-owned finalization and verify the resulting commit plus clean Git state.
+- NEXT STEP: Finalize only the six changed source/docs/metadata/APK paths, then read back the log, commit, and worktree.
 - KEY PATHS: `app/src/main/java/com/example/applemaps/map/Place.kt`, `app/src/main/java/com/example/applemaps/map/ApplePlaceClient.kt`, `app/src/main/java/com/example/applemaps/ui/PlaceCard.kt`.
 
 ### 2026-08-14 UTC — Target and data gap established
@@ -67,3 +72,37 @@
 - VERIFIED: `/root/.codex/tools/hk/hk-finalize.sh` completed successfully and its log records commit `f39b1c3` on branch `hk/fix-consumer-map-directions-and-navigati` for the 11 explicitly scoped paths.
 - VERIFIED: `git show` reports the source client, models, Apple link parser, UI, lifecycle wiring, two test files, changelog/version metadata, journal, and canonical root APK in that commit. The APK is Git-tracked despite the repository's local exclude rule.
 - VERIFIED: No GitHub push was requested or performed.
+
+### 2026-08-14 UTC — User-corrected interaction model and PRE-BUILD RISK PASS
+- VERIFIED: The current implementation transforms `PlaceCardBody` between Overview and Menu using an internal tab bar; this conflicts with the requested interaction shown in the new reference image.
+- VERIFIED: `AppleMapsScreen` already renders the place card and Directions as independent sibling `AppleBottomSheet` instances with separate controllers, stacked draw order, independent dismissal, and a preserved underlying sheet. The same contract can host Menu.
+- VERIFIED: The place-card action row conditionally composes Directions, Call, Website, and More; `ic_menucard.xml` and `ic_menucard_fill.xml` already exist, so no new artwork is required.
+- VERIFIED: Yelp blocked the tested emulator/datacenter route. On any route Yelp blocks, direct source parsing cannot populate the native menu; the current explicit unavailable state/source-page action is the only verified behavior there.
+- ASSUMPTION — VERIFIED: Menu availability is already represented by `place.menuUrl`, and every place selection converges on the same `place` state.
+- UNKNOWN / FEASIBILITY RISK: A normal user's phone route may or may not be accepted by Yelp. This UI correction does not solve that transport dependency and must not be described as doing so.
+- PRECONDITION: The selected restaurant must expose Apple's explicit HTTPS Menu quick link; otherwise the top-row Menu action remains absent.
+- ALL ENTRY POINTS: `PlaceCardHeader` is called once for restaurant cards; `PlaceCardBody` has one live call site; `AppleMapsScreen` owns place, Directions, and Back state. All three must change together.
+- CROSS-CUTTING: Menu fetch remains off the main thread; it should start only when the Menu sheet opens, reset on place change, reject stale URL completion, and preserve API 29 support. Back/X must dismiss Menu before Directions/place, and no physics animation may be introduced.
+- OBSERVABILITY: The separate sheet retains visible loading, unavailable, loaded, and Open menu states.
+- VERIFICATION REACHABILITY: Unit/lint/build cover wiring and parsing. Real Redroid taps can verify action-row placement, independent over-sheet stacking, Back/X dismissal, and the unavailable state. Populated rows remain physical-network UI-unverified unless the route reaches Yelp.
+- DECISION: Implement only the requested interaction correction now; do not add an unrequested credentialed scraping backend or claim that the Yelp route block is solved.
+
+### 2026-08-14 UTC — Stacked-sheet implementation built
+- VERIFIED: `PlaceCardHeader` now conditionally inserts `ic_menucard_fill` / Menu before More; `PlaceCardBody` no longer contains Overview/Menu page state or tabs.
+- VERIFIED: `AppleMapsScreen` owns a separate `menuSheet` controller and `menuOpen` state, renders Menu as a sibling `AppleBottomSheet`, begins source loading only while that sheet is open, resets it on place change, and gives Menu its own close/back path.
+- VERIFIED: The combined `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` invocation returned `BUILD SUCCESSFUL in 2m 36s`; compilation, unit tests, lint, and assembly passed.
+- VERIFIED: The canonical root APK is byte-identical to Gradle output at 237,670,600 bytes, SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`; `aapt` reports versionCode 14, versionName `0.15-stacked-restaurant-menu`, minSdk 29, targetSdk 36.
+- VERIFIED: The compiler emitted the same three warnings in pre-existing untouched expressions; no warning points to the new Menu action or sheet.
+
+### 2026-08-14 UTC — Stacked Menu real-UI verification
+- VERIFIED: Installed root APK reported versionCode 14 / versionName `0.15-stacked-restaurant-menu`, and launcher taps opened the intended Maps activity.
+- VERIFIED: Searching for `Sisters 900 Fulton Street Brooklyn` and opening the result rendered five evenly weighted actions in this order: Directions, Call, Website, Menu, More. No in-body Overview/Menu tabs remained.
+- VERIFIED: Tapping Menu rendered a second `AppleBottomSheet` with its own Sisters/Menu header, close control, and blocked-source fallback. The UI hierarchy retained the underlying Sisters place-card nodes while the second sheet was open.
+- VERIFIED: Tapping the menu sheet's X restored the original card with all five actions. Reopening Menu and pressing Android Back also removed only the Menu sheet and restored the same action row.
+- VERIFIED: The app process remained present and scoped post-test logcat contained no fatal-exception, app-process-crash, or ANR signature.
+- TEST LIMIT: Yelp still blocks this emulator network route. This proves the separate-sheet interaction and fallback, not loaded native menu rows on a source-reachable phone route.
+- SELF-REVIEW: All changed callers/usages were enumerated; network I/O remains on `Dispatchers.IO`; place changes and card dismissal close Menu; stale URL completion is guarded; absent menu URLs omit the action; no permission/API-level change was introduced. One stale Menu-tab KDoc was corrected.
+
+### 2026-08-14 UTC — Final v0.15 artifact published
+- VERIFIED: Final `:app:assembleDebug` after documentation self-review returned `BUILD SUCCESSFUL in 31s`; root and Gradle APKs are byte-identical at 237,670,600 bytes with SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
+- VERIFIED: Caddy serves the artifact at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-stacked-menu-debug.apk`; a fresh download returned HTTP 200 and matched the root APK's exact byte count and SHA-256.

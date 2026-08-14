@@ -54,13 +54,16 @@ import kotlin.math.roundToInt
  * title 28sp/700 · subtitle 14sp ("Category · " + accent locality) · Directions 52dp with a white circular
  * badge/blue turn glyph · Share/Close 30dp
  * circles (bg rgba(199,199,199,0.36)) · Hours/Ratings/Accepts before media · "Details" 20sp/600 ·
- * platter cells (14sp title / 17sp content). Restaurants with an Apple menu quick link add native Overview/Menu
- * tabs; Menu renders source-backed sections, prices, descriptions, and optional dish photos with explicit
- * loading/unavailable states. Real emulator taps verify the tabs and unavailable state; loaded-row clipping remains
- * physical-network UI-unverified because that emulator route cannot reach the source.
+ * platter cells (14sp title / 17sp content). Restaurants with an Apple menu quick link add a Menu action beside
+ * Call/Website; its callback opens a separate sheet while this place card remains unchanged underneath.
  */
 @Composable
-fun PlaceCardHeader(place: Place, onDirections: () -> Unit = {}, onClose: () -> Unit = {}) {
+fun PlaceCardHeader(
+    place: Place,
+    onDirections: () -> Unit = {},
+    onMenu: () -> Unit = {},
+    onClose: () -> Unit = {},
+) {
     val c = LocalAppleColors.current
     val context = LocalContext.current
     // P1 3.3: transition state (not a plain Boolean) so the More popover can play its 150ms exit before unmounting
@@ -113,6 +116,7 @@ fun PlaceCardHeader(place: Place, onDirections: () -> Unit = {}, onClose: () -> 
             if (!place.website.isNullOrEmpty()) ActionButton(R.drawable.ic_safari_fill, "Website", Modifier.weight(1f)) {
                 webUrl()?.let { fire(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(it))) }
             }
+            if (place.menuUrl != null) ActionButton(R.drawable.ic_menucard_fill, "Menu", Modifier.weight(1f), onClick = onMenu)
             Box(Modifier.weight(1f)) {
                 ActionButton(R.drawable.ic_action_ellipsis, "More", Modifier.fillMaxWidth(), iconSize = 18.dp) {
                     moreState.targetState = true
@@ -230,12 +234,9 @@ fun PlaceCardBody(
     onAirportCategoryClick: (AirportBrowseCategory) -> Unit = {},
     onDirections: () -> Unit = {},
     loading: Boolean = false,
-    menuLoading: Boolean = false,
-    menuUnavailable: Boolean = false,
     distanceMiles: Double? = null,
 ) {
     val c = LocalAppleColors.current
-    var selectedPage by remember(place.menuUrl) { mutableStateOf("Overview") }
     // P1 3.1: spinner → content CROSSFADES (150ms CSS ease-out, the traced .mw-card fade) instead of an instant swap
     androidx.compose.animation.Crossfade(loading,
         animationSpec = androidx.compose.animation.core.tween(150, easing = com.example.applemaps.ui.anim.AppleEasing.EaseOutStd),
@@ -246,14 +247,6 @@ fun PlaceCardBody(
         }
     } else {
     Column(Modifier.fillMaxWidth().padding(bottom = 24.dp)) {
-        if (place.menuUrl != null) {
-            // overviewMenuTabBar — two text tabs directly below the action row; blue 3dp underline marks the page.
-            OverviewMenuTabBar(selectedPage) { selectedPage = it }
-        }
-        if (selectedPage == "Menu" && place.menuUrl != null) {
-            RestaurantMenuPage(place.menuUrl, place.restaurantMenu, menuLoading, menuUnavailable)
-            return@Column
-        }
         // placeSummaryRibbon — HOURS | RATINGS | ACCEPTS directly below actions, before visual media.
         RibbonStrip(place, distanceMiles)
         // Photos — edge-to-edge horizontal scroller (traced sc-photo-item 173x217 r16, 20dp start inset)
@@ -318,35 +311,26 @@ fun PlaceCardBody(
     }
 }
 
+/** Header for the independent Menu sheet; closing it reveals the untouched restaurant sheet beneath. */
 @Composable
-private fun OverviewMenuTabBar(selectedPage: String, onSelected: (String) -> Unit) {
+fun RestaurantMenuSheetHeader(place: Place, onClose: () -> Unit) {
     val colors = LocalAppleColors.current
-    Row(Modifier.fillMaxWidth().padding(top = 14.dp)) {
-        listOf("Overview", "Menu").forEach { page ->
-            Column(
-                Modifier.weight(1f).clickable { onSelected(page) },
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    page,
-                    color = if (selectedPage == page) Color(0xFF007AFF) else colors.glyphMuted,
-                    fontSize = 16.sp,
-                    fontWeight = if (selectedPage == page) FontWeight.SemiBold else FontWeight.Normal,
-                    modifier = Modifier.padding(vertical = 12.dp),
-                )
-                Box(
-                    Modifier.fillMaxWidth().height(3.dp)
-                        .background(if (selectedPage == page) Color(0xFF007AFF) else Color.Transparent),
-                )
-            }
+    Row(
+        Modifier.fillMaxWidth().padding(start = 20.dp, end = 16.dp, top = 4.dp, bottom = 14.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(place.name, color = colors.glyphDefault, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Text("Menu", color = colors.glyphMuted, fontSize = 14.sp)
         }
+        CircleIconButton(R.drawable.ic_xmark, "Close menu", iconSize = 12.dp, onClick = onClose)
     }
-    HorizontalDivider(color = colors.borderMuted, thickness = 1.dp)
 }
 
-/** Native Menu page shown by the blue-underlined Menu tab in a restaurant's place-card sheet. */
+/** Google-style source-backed menu content rendered inside its own stacked sheet. */
 @Composable
-private fun RestaurantMenuPage(
+fun RestaurantMenuPage(
     sourceUrl: String,
     menu: RestaurantMenu?,
     loading: Boolean,

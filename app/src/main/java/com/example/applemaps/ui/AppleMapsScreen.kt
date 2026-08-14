@@ -90,8 +90,8 @@ import kotlinx.coroutines.launch
  * their corresponding hidden consumer page keeps Apple's native result markers on the map.
  * Large venues retain Apple's photo albums, attributed About and amenity content, related-place list, directory,
  * browse categories, venue bounds, and mode-specific routing entrances in that same native place-card flow.
- * Restaurants with an Apple Menu quick link load its semantic sections independently and expose a native Menu tab;
- * changing the selected place cancels stale menu work and a source failure stays visible without blocking Overview.
+ * Restaurants with an Apple Menu quick link expose a Menu action that opens an independent source-backed sheet over
+ * the unchanged place card; changing the selected place closes that sheet and rejects stale menu results.
  * Phone rendering for this consumer-guidance revision remains device-unverified until its APK is exercised.
  */
 /** Preserves the former 0.16-per-60Hz-frame follow curve at every display refresh rate. */
@@ -136,6 +136,7 @@ private fun routeLabels(routes: List<com.example.applemaps.map.Route>): List<Pai
 fun AppleMapsScreen(mapController: ConsumerMapController) {
     val sheetController = remember { AppleSheetController() }
     val placeSheet = remember { AppleSheetController() }
+    val menuSheet = remember { AppleSheetController() }         // menu slides up OVER the unchanged place card
     val directionsSheet = remember { AppleSheetController() }   // directions slide up OVER the place card (sheet-over-sheet)
     var showPicker by remember { mutableStateOf(false) }
     var mapType by remember { mutableStateOf("Standard") }
@@ -164,6 +165,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var placeLoading by remember { mutableStateOf(false) }   // show a spinner in the card body until the full data loads
     var menuLoading by remember { mutableStateOf(false) }
     var menuUnavailable by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     var directionsRoutes by remember { mutableStateOf<List<com.example.applemaps.map.Route>?>(null) }   // route options while in directions mode
     var directionsError by remember { mutableStateOf<String?>(null) }
     var routeRequestId by remember { mutableStateOf(0) }
@@ -313,7 +315,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     //    icon shows again ("back to the icon") — collapsing a POI to a circular dot was the wrong behavior.
     fun dismissCard() {
         selectionGeneration++
-        place = null; isStation = false; stationInfo = null; placeLoading = false; directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList()
+        place = null; isStation = false; stationInfo = null; placeLoading = false; menuOpen = false; directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList()
         if (!pinIsDropped) { pin = null; pinFace = null; pinLabel = "Marked Location"; minimized = false } else { minimized = true }
         RouteLayer.clear(mapController)
     }
@@ -559,7 +561,11 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         // standalone 44dp binocular control. Both stay wholly on the map, 10dp above the active sheet.
         if (place != null && directionsRoutes == null && !navMode && !lookOpen && !lookPreviewOpen && !lookPreviewTransitioning && gallery == null) {
             val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
-            val reportedHeight = if (directionsRoutes != null) directionsSheet.offsetPx else placeSheet.offsetPx
+            val reportedHeight = when {
+                directionsRoutes != null -> directionsSheet.offsetPx
+                menuOpen -> menuSheet.offsetPx
+                else -> placeSheet.offsetPx
+            }
             val activeSheetHeight = reportedHeight.takeIf { it.isFinite() && it in 1f..screenHeightPx }
                 ?: with(density) { 320.dp.toPx() }
             val navigationInset = WindowInsets.navigationBars.getBottom(density)
@@ -628,7 +634,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         // (not nested), so dismissing the top one leaves the other EXACTLY where it was — neither sheet drives the
         // other's position or size. This is the "separate sheet for every thing, stacked" model.
         val cardPlace = place ?: lastPlace
-        val startDirections: () -> Unit = { stops.value = emptyList(); stopLabels.value = emptyList(); recomputeDirections() }
+        val startDirections: () -> Unit = { menuOpen = false; stops.value = emptyList(); stopLabels.value = emptyList(); recomputeDirections() }
         val selectRoute: (Int) -> Unit = { idx ->
             val rs = directionsRoutes
             if (rs != null && idx in rs.indices) selectedRoute = idx
@@ -672,18 +678,28 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     topRadius = 14.dp,
                     modifier = Modifier.align(Alignment.BottomCenter),
                     controller = placeSheet,
-                    ceilingProvider = { if (directionsRoutes != null) directionsSheet.offsetPx else 0f },   // never rise above the directions sheet
+                    ceilingProvider = {
+                        when {
+                            directionsRoutes != null -> directionsSheet.offsetPx
+                            menuOpen -> menuSheet.offsetPx
+                            else -> 0f
+                        }
+                    },
                     header = {
                         AppleCardEnter(cardPlace.name) { when {   // P1 3.2: re-play the card enter when a NEW place is selected
                             isStation && st != null -> StationCardHeader(st, onClose = { dismissCard() })
-                            else -> PlaceCardHeader(cardPlace, onDirections = startDirections, onClose = { dismissCard() })
+                            else -> PlaceCardHeader(
+                                cardPlace,
+                                onDirections = startDirections,
+                                onMenu = { menuOpen = true },
+                                onClose = { dismissCard() },
+                            )
                         } }
                     },
                     body = {
                         AppleCardEnter(cardPlace.name) { when {   // P1 3.2: body fades/rises on a NEW place too
                             isStation && st != null -> StationCardBody(st)
                             else -> PlaceCardBody(cardPlace, onDirections = startDirections, loading = placeLoading,
-                                menuLoading = menuLoading, menuUnavailable = menuUnavailable,
                                 onRelatedPlaceClick = { openRelatedPlace(cardPlace, it) },
                                 onAirportCategoryClick = { openAirportCategory(cardPlace, it) },
                                 distanceMiles = run {   // miles from the user's real location to the place → DISTANCE ribbon column
@@ -712,6 +728,34 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                                 DiagLog.log("LOOKWEB", "photoExpand", "index=$i", "hasBounds=${if (bounds != null) 1 else 0}")
                             })
                         } }
+                    },
+                )
+            }
+        }
+        // MENU over-sheet — an independent sibling above the place card. Closing it reveals the card at its exact
+        // prior detent; menu content never replaces or resizes the underlying restaurant sheet.
+        AnimatedVisibility(
+            visible = menuOpen && place != null && !navMode,
+            enter = slideInVertically(tween(420, easing = AppleEasing.ExpoOut)) { it },
+            exit = slideOutVertically(tween(520, easing = AppleEasing.ExpoOut)) { it },
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            val menuPlace = place
+            if (menuPlace?.menuUrl != null) {
+                AppleBottomSheet(
+                    peekHeight = 82.dp,
+                    topRadius = 14.dp,
+                    modifier = Modifier.align(Alignment.BottomCenter),
+                    controller = menuSheet,
+                    initialDetent = maxOf(1, placeSheet.restingIndex),
+                    header = { RestaurantMenuSheetHeader(menuPlace) { menuOpen = false } },
+                    body = {
+                        RestaurantMenuPage(
+                            menuPlace.menuUrl,
+                            menuPlace.restaurantMenu,
+                            menuLoading,
+                            menuUnavailable,
+                        )
                     },
                 )
             }
@@ -809,7 +853,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
         }
         LaunchedEffect(browseState != null) { if (browseState != null) browseSheet.goTo(1) }
 
-        BackHandler(enabled = browseState != null || place != null || directionsRoutes != null || navMode) {
+        BackHandler(enabled = browseState != null || place != null || menuOpen || directionsRoutes != null || navMode) {
             when {
                 browseState != null -> closeBrowse()
                 navMode -> {   // leave turn-by-turn: flatten the map back to the overview, restore the planner
@@ -818,13 +862,18 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     placeSheet.goTo(1)
                 }
                 directionsRoutes != null -> exitDirections()
+                menuOpen -> menuOpen = false
                 else -> dismissCard()
             }
         }
         LaunchedEffect(place) { if (place != null) placeSheet.goTo(1) }
         LaunchedEffect(place?.menuUrl) {
+            menuOpen = false
             menuLoading = false
             menuUnavailable = false
+        }
+        LaunchedEffect(menuOpen, place?.menuUrl) {
+            if (!menuOpen) return@LaunchedEffect
             val sourceUrl = place?.menuUrl ?: return@LaunchedEffect
             if (place?.restaurantMenu == null) {
                 menuLoading = true

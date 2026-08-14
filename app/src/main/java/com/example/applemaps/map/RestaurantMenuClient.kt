@@ -10,14 +10,14 @@ import java.util.Locale
 import java.util.zip.GZIPInputStream
 
 /**
- * Restaurant Menu data client for the place card's user-facing “Menu” tab.
+ * Restaurant Menu data client for the place card's user-facing Menu over-sheet.
  *
  * Apple place pages identify a restaurant's actual menu URL but do not embed the dishes. This client opens that
  * HTTPS URL off the main thread through [PlaceRepository.fetchRestaurantMenu], reads its standard schema.org `Menu`
  * JSON-LD, and associates optional row photos from the same document by item URL. Missing/changed source markup
- * returns null; [com.example.applemaps.ui.PlaceCardBody] then keeps the source link visible instead of fabricating
+ * returns null; [com.example.applemaps.ui.RestaurantMenuPage] then keeps the source link visible instead of fabricating
  * menu content. Exercise it by selecting a restaurant with an Apple “Menu” quick link and tapping Menu in the card.
- * Parser behavior is unit-tested. Real emulator taps verify the Menu tab and unavailable-source state; a route that
+ * Parser behavior is unit-tested. Real emulator taps verify the Menu action, independent sheet, and unavailable-source state; a route that
  * can reach the source is still required to exercise loaded rows and filters in the physical UI.
  */
 internal object RestaurantMenuClient {
