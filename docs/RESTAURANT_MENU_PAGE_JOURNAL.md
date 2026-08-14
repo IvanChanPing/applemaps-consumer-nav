@@ -11,8 +11,8 @@
 - DONE (verified): The exact v0.15 root APK was installed on Redroid; real UI input showed Directions/Call/Website/Menu/More, opened Menu as an independent sheet, and restored the unchanged place card through both X and Android Back without a crash/ANR signature.
 - TEST LIMIT: Yelp blocked this emulator route, so the separate sheet's unavailable/source fallback is UI-verified; loaded item rows, category filtering, photos, and scrolling remain parser/build verified but physical-network UI-unverified.
 - DONE (verified): Final assembly succeeded; the exact v0.15 APK is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-stacked-menu-debug.apk`, and a fresh HTTPS download returned HTTP 200 with matching 237,670,600-byte size and SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
-- IN PROGRESS: Run scoped Codex-owned finalization and verify the resulting commit plus clean Git state.
-- NEXT STEP: Finalize only the six changed source/docs/metadata/APK paths, then read back the log, commit, and worktree.
+- DONE (verified): Codex-owned scoped finalization created on-box commit `0b6b050` (`Open restaurant menus in a stacked sheet`) containing exactly the seven corrected source, documentation, metadata, and canonical APK paths; no push was requested or performed.
+- NEXT STEP: User installs the published v0.15 APK and tests a restaurant menu on their normal phone network; source-reachable loaded rows remain the only explicit UI verification gap.
 - KEY PATHS: `app/src/main/java/com/example/applemaps/map/Place.kt`, `app/src/main/java/com/example/applemaps/map/ApplePlaceClient.kt`, `app/src/main/java/com/example/applemaps/ui/PlaceCard.kt`.
 
 ### 2026-08-14 UTC — Target and data gap established
@@ -106,3 +106,7 @@
 ### 2026-08-14 UTC — Final v0.15 artifact published
 - VERIFIED: Final `:app:assembleDebug` after documentation self-review returned `BUILD SUCCESSFUL in 31s`; root and Gradle APKs are byte-identical at 237,670,600 bytes with SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
 - VERIFIED: Caddy serves the artifact at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-stacked-menu-debug.apk`; a fresh download returned HTTP 200 and matched the root APK's exact byte count and SHA-256.
+
+### 2026-08-14 UTC — v0.15 scoped finalization verified
+- VERIFIED: Codex-owned finalization completed as commit `0b6b050` (`Open restaurant menus in a stacked sheet`) on `hk/fix-consumer-map-directions-and-navigati`, scoped to the seven intended v0.15 paths.
+- VERIFIED: No GitHub push was requested or performed.
