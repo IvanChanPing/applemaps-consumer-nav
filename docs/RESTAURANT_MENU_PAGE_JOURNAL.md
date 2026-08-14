@@ -15,9 +15,10 @@
 - DONE (verified): v0.16 compiles, all 46 debug unit tests pass, Android lint completes, and debug assembly produces a 237,686,968-byte APK with SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`.
 - DONE (verified): The exact v0.16 canonical APK is installed on Redroid; real UI input verified Order, Reserve, Showtimes, Tickets, horizontal overflow, shared external-link handoff, and the unchanged stacked Menu/Back behavior without a scoped crash/ANR signature.
 - DONE (verified): v0.16 is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-place-actions-debug.apk`; a fresh HTTPS download returned HTTP 200 and matched the source's 237,686,968 bytes and SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`.
-- IN PROGRESS: Run the final scoped diff review and finalize only the eight v0.16 paths while preserving concurrent GitHub-publishing files.
+- DONE (verified): Codex-owned scoped finalization created commit `1a2b4e481b76c500c65e7072ea15dd913b62e571` (`Add source-backed place actions`) containing exactly the eight intended v0.16 paths; no push was requested or performed.
+- IN PROGRESS: None for v0.16.
 - TODO (parked): Replace the tiny placeholder bullets on every amenity/list row with proper leading icons appropriate to each item, including hotel services, room features, accessibility/payment rows, and facility lists shown in the supplied SpringHill Suites screenshots.
-- NEXT STEP: Verify the final diff/test/artifact state, fire Codex-owned scoped finalization for the eight v0.16 paths, and confirm the resulting commit without touching `.github/` or `docs/GITHUB_PUBLISH_JOURNAL.md`.
+- NEXT STEP: When requested, implement the parked proper-leading-icons TODO as its own scoped visual change.
 - KEY PATHS: `app/src/main/java/com/example/applemaps/map/Place.kt`, `app/src/main/java/com/example/applemaps/map/ApplePlaceClient.kt`, `app/src/main/java/com/example/applemaps/ui/PlaceCard.kt`.
 
 ### 2026-08-14 UTC — Amenity/list icon follow-up captured
@@ -49,6 +50,11 @@
 - VERIFIED: No network operation, permission, lifecycle resource, background task, API-level dependency, or physics animation was added. External launch uses the existing guarded intent helper.
 - VERIFIED: Real UI use covered five-item equal widths, six-item overflow scrolling, all four labels/icons, shared external handoff, Menu stacking, Back restoration, and post-run process/crash state.
 - VERIFIED: In-file KDoc identifies the source-backed actions, user-facing labels, parser/rendering flow, visual row, test path, and proven status; `CHANGELOG.md`, this journal, and Codex memory are current.
+
+### 2026-08-14 UTC — v0.16 scoped finalization verified
+- VERIFIED: Codex-owned housekeeping committed the eight intended source, test, metadata, documentation, and canonical APK paths as `1a2b4e481b76c500c65e7072ea15dd913b62e571` (`Add source-backed place actions`).
+- VERIFIED: The only remaining worktree entries are concurrent `.github/` and `docs/GITHUB_PUBLISH_JOURNAL.md` files; this task did not stage, commit, modify, or delete them.
+- VERIFIED: No GitHub push was requested or performed.
 
 ### 2026-08-14 UTC — Target and data gap established
 - VERIFIED: Git status in `applemaps-consumer-nav` is clean on branch `hk/fix-consumer-map-directions-and-navigati` at `bee694d`.
