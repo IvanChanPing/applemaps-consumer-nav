@@ -36,6 +36,7 @@ import com.example.applemaps.diag.DiagLog
 import com.example.applemaps.map.AirportBrowseCategory
 import com.example.applemaps.map.AirportDetails
 import com.example.applemaps.map.Place
+import com.example.applemaps.map.PlaceActionKind
 import com.example.applemaps.map.PlaceAccessPoint
 import com.example.applemaps.map.PlaceAmenity
 import com.example.applemaps.map.RelatedPlace
@@ -54,8 +55,9 @@ import kotlin.math.roundToInt
  * title 28sp/700 · subtitle 14sp ("Category · " + accent locality) · Directions 52dp with a white circular
  * badge/blue turn glyph · Share/Close 30dp
  * circles (bg rgba(199,199,199,0.36)) · Hours/Ratings/Accepts before media · "Details" 20sp/600 ·
- * platter cells (14sp title / 17sp content). Restaurants with an Apple menu quick link add a Menu action beside
- * Call/Website; its callback opens a separate sheet while this place card remains unchanged underneath.
+ * platter cells (14sp title / 17sp content). Source-backed Menu/Reserve/Tickets/Order/Showtimes actions join
+ * Call/Website when available; overflow scrolls horizontally, and Menu opens a separate sheet above this card.
+ * Proven with real searches/taps for Sisters, 230 Fifth, AMC Empire 25, and The Metropolitan Museum of Art.
  */
 @Composable
 fun PlaceCardHeader(
@@ -98,26 +100,42 @@ fun PlaceCardHeader(
             CircleIconButton(R.drawable.ic_xmark, "Close", iconSize = 12.dp, onClick = onClose)
         }
         Spacer(Modifier.height(16.dp))
-        // Action row — Directions (primary accent) + Call / Website / More (measured: r10, 11sp/600 label).
-        // Only the AVAILABLE actions are shown, and each now fires the real intent (dial / browser / share).
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        // placeActionRow — gray 52dp rounded buttons below the subtitle; equal width through five, then scroll.
+        val actionCount = 2 + listOf(place.phone, place.website, place.menuUrl).count { !it.isNullOrEmpty() } +
+            place.placeActions.size
+        val actionRowModifier = if (actionCount > 5) {
+            Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+        } else Modifier.fillMaxWidth()
+        Row(actionRowModifier, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            fun actionModifier() = if (actionCount > 5) Modifier.width(84.dp) else Modifier.weight(1f)
             ActionButton(
                 R.drawable.ic_action_turn,
                 "Directions",
-                Modifier.weight(1f),
+                actionModifier(),
                 primary = true,
                 iconSize = 18.dp,
                 iconBadge = true,
                 onClick = onDirections,
             )
-            if (!place.phone.isNullOrEmpty()) ActionButton(R.drawable.ic_phone_fill, "Call", Modifier.weight(1f)) {
+            if (!place.phone.isNullOrEmpty()) ActionButton(R.drawable.ic_phone_fill, "Call", actionModifier()) {
                 fire(android.content.Intent(android.content.Intent.ACTION_DIAL, android.net.Uri.parse("tel:${place.phone}")))
             }
-            if (!place.website.isNullOrEmpty()) ActionButton(R.drawable.ic_safari_fill, "Website", Modifier.weight(1f)) {
+            if (!place.website.isNullOrEmpty()) ActionButton(R.drawable.ic_safari_fill, "Website", actionModifier()) {
                 webUrl()?.let { fire(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(it))) }
             }
-            if (place.menuUrl != null) ActionButton(R.drawable.ic_menucard_fill, "Menu", Modifier.weight(1f), onClick = onMenu)
-            Box(Modifier.weight(1f)) {
+            if (place.menuUrl != null) ActionButton(R.drawable.ic_menucard_fill, "Menu", actionModifier(), onClick = onMenu)
+            place.placeActions.forEach { action ->
+                val (icon, label) = when (action.kind) {
+                    PlaceActionKind.RESERVE -> R.drawable.ic_calendar_badge_clock to "Reserve"
+                    PlaceActionKind.TICKETS -> R.drawable.ic_ticket_fill to "Tickets"
+                    PlaceActionKind.ORDER -> R.drawable.ic_takeoutbag_and_cup_and_straw_fill to "Order"
+                    PlaceActionKind.SHOWTIMES -> R.drawable.ic_ticket_fill to "Showtimes"
+                }
+                ActionButton(icon, label, actionModifier()) {
+                    fire(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(action.url)))
+                }
+            }
+            Box(actionModifier()) {
                 ActionButton(R.drawable.ic_action_ellipsis, "More", Modifier.fillMaxWidth(), iconSize = 18.dp) {
                     moreState.targetState = true
                 }

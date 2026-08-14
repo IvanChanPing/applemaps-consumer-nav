@@ -63,6 +63,14 @@ data class RestaurantMenu(
     val sections: List<RestaurantMenuSection>,
 )
 
+/**
+ * A source-backed transaction offered by Apple for the selected place. [PlaceCardHeader] renders
+ * these as Reserve, Tickets, Order, or Showtimes buttons; parser and live-place UI coverage is proven.
+ */
+enum class PlaceActionKind { RESERVE, TICKETS, ORDER, SHOWTIMES }
+
+data class PlaceAction(val kind: PlaceActionKind, val url: String)
+
 data class RelatedPlace(
     val id: String,
     val name: String,
@@ -124,6 +132,7 @@ data class Place(
     val relatedPlaces: List<RelatedPlace> = emptyList(),
     val airportDetails: AirportDetails? = null,
     val dataAttributions: List<PlaceAttribution> = emptyList(),
+    val placeActions: List<PlaceAction> = emptyList(),
     val menuUrl: String? = null,
     val restaurantMenu: RestaurantMenu? = null,
 ) {

@@ -167,7 +167,13 @@ internal object ApplePlaceClient {
         val about = parseAbout(components, ::componentValue)
         val relatedPlaces = parseRelatedPlaces(components["COMPONENT_TYPE_TEMPLATE_PLACE"])
         val airportDetails = parseAirportDetails(components)
-        val menuUrl = parseMenuUrl(components["COMPONENT_TYPE_QUICK_LINK"])
+        val quickLinks = parseQuickLinks(components["COMPONENT_TYPE_QUICK_LINK"])
+        val menuUrl = quickLinks.firstOrNull { it.title.equals("Menu", ignoreCase = true) }?.url
+        val placeActions = parsePlaceActions(
+            components["COMPONENT_TYPE_ACTION_DATA"],
+            quickLinks,
+            category ?: broadCategory,
+        )
 
         return Place(
             name = firstString(entity.opt("name")) ?: query,
@@ -199,23 +205,92 @@ internal object ApplePlaceClient {
             alsoHere = relatedPlaces.map(RelatedPlace::name),
             relatedPlaces = relatedPlaces,
             airportDetails = airportDetails,
+            placeActions = placeActions,
             menuUrl = menuUrl,
         )
     }
 
-    /** Returns only Apple's explicit HTTPS “Menu” quick link; order/delivery links are intentionally excluded. */
-    private fun parseMenuUrl(component: JSONObject?): String? {
-        val values = component?.optJSONArray("value") ?: return null
+    private data class QuickLink(val title: String, val url: String)
+
+    /** Normalizes Apple's HTTPS quick links once for Menu and transactional-action resolution. */
+    private fun parseQuickLinks(component: JSONObject?): List<QuickLink> {
+        val values = component?.optJSONArray("value") ?: return emptyList()
+        val result = mutableListOf<QuickLink>()
         for (valueIndex in 0 until values.length()) {
             val links = values.optJSONObject(valueIndex)?.optJSONObject("quickLink")
                 ?.optJSONArray("quickLinkItem") ?: continue
             for (linkIndex in 0 until links.length()) {
                 val link = links.optJSONObject(linkIndex) ?: continue
-                if (!firstString(link.opt("title")).equals("Menu", ignoreCase = true)) continue
-                return link.optString("url").trim().takeIf { it.startsWith("https://") }
+                val title = firstString(link.opt("title")) ?: link.optString("title")
+                val url = link.optString("url").trim().takeIf { it.startsWith("https://") }
+                if (title.isNotBlank() && url != null) result += QuickLink(title, url)
             }
         }
-        return null
+        return result
+    }
+
+    /**
+     * Merges Apple's action-data providers with quick-link fallbacks. Only HTTPS-backed actions survive;
+     * duplicate restaurant order/delivery/pickup variants collapse into one Order action. Covered by
+     * exact-shape unit fixtures and exercised through live Reserve/Tickets/Order/Showtimes place cards.
+     */
+    private fun parsePlaceActions(
+        component: JSONObject?,
+        quickLinks: List<QuickLink>,
+        placeCategory: String?,
+    ): List<PlaceAction> {
+        val movieTheater = placeCategory.equals("Movie Theater", ignoreCase = true)
+        fun kindForCategory(category: String): PlaceActionKind? = when (category) {
+            "quicklinks.restaurant_reservation" -> PlaceActionKind.RESERVE
+            "quicklinks.buy_tickets" -> if (movieTheater) PlaceActionKind.SHOWTIMES else PlaceActionKind.TICKETS
+            "quicklinks.restaurant_order_food",
+            "quicklinks.restaurant_order_delivery",
+            "quicklinks.restaurant_pickup" -> PlaceActionKind.ORDER
+            else -> null
+        }
+        fun kindForTitle(title: String): PlaceActionKind? = when (title.trim().lowercase(Locale.US)) {
+            "reserve", "reservation", "reservations" -> PlaceActionKind.RESERVE
+            "tickets", "buy tickets" -> if (movieTheater) PlaceActionKind.SHOWTIMES else PlaceActionKind.TICKETS
+            "order", "order online", "delivery", "pickup" -> PlaceActionKind.ORDER
+            "showtimes" -> PlaceActionKind.SHOWTIMES
+            else -> null
+        }
+        fun actionUrl(actionData: JSONObject): String? {
+            val winningAdamId = actionData.opt("winningAdamId").takeUnless { it == null || it == JSONObject.NULL }
+                ?.toString()?.takeIf(String::isNotBlank)
+            val providers = actionData.optJSONArray("actionLink") ?: return null
+            val ordered = (0 until providers.length()).mapNotNull(providers::optJSONObject)
+                .sortedBy { provider ->
+                    val adamId = provider.opt("appAdamId").takeUnless { it == null || it == JSONObject.NULL }?.toString()
+                    if (winningAdamId != null && adamId == winningAdamId) 0 else 1
+                }
+            for (provider in ordered) {
+                val links = provider.optJSONArray("link") ?: continue
+                for (index in 0 until links.length()) {
+                    val url = links.optJSONObject(index)?.optJSONObject("quickLinkParams")
+                        ?.optString("url")?.trim()?.takeIf { it.startsWith("https://") }
+                    if (url != null) return url
+                }
+            }
+            return null
+        }
+        fun fallbackUrl(kind: PlaceActionKind): String? = quickLinks.firstOrNull {
+            kindForTitle(it.title) == kind
+        }?.url
+
+        val resolved = linkedMapOf<PlaceActionKind, String>()
+        component?.optJSONArray("value")?.let { values ->
+            for (index in 0 until values.length()) {
+                val actionData = values.optJSONObject(index)?.optJSONObject("actionData") ?: continue
+                val kind = kindForCategory(actionData.optString("categoryId")) ?: continue
+                val url = actionUrl(actionData) ?: fallbackUrl(kind) ?: continue
+                resolved.putIfAbsent(kind, url)
+            }
+        }
+        quickLinks.forEach { link ->
+            kindForTitle(link.title)?.let { kind -> resolved.putIfAbsent(kind, link.url) }
+        }
+        return PlaceActionKind.entries.mapNotNull { kind -> resolved[kind]?.let { PlaceAction(kind, it) } }
     }
 
     private data class CategorizedPhotos(val albums: List<PlacePhotoAlbum>)

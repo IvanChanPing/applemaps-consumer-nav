@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-08-14 — 0.16 source-backed place actions
+
+- Added conditional Reserve, Tickets, Order, and Showtimes buttons from Apple's action-data and quick-link payloads; actions without an HTTPS destination are omitted.
+- Reservation, ordering, and ticket providers honor Apple's winning provider when present, fall back to a matching quick link, and collapse delivery/pickup/order variants into one Order action.
+- Movie-theater ticket actions are labeled Showtimes; other ticketed venues retain Tickets. Rows with more than five available actions scroll horizontally while shorter rows keep equal-width buttons.
+- Unit tests, Android lint, and debug assembly pass for the canonical `applemaps-consumer-nav-debug.apk` (237,686,968 bytes; SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`).
+- Real emulator input verified Order at Sisters, Reserve at 230 Fifth, Showtimes at AMC Empire 25, and Tickets at The Metropolitan Museum of Art; it also verified horizontal overflow, the Order external URL handoff, and the unchanged stacked Menu/Back interaction.
+
 ## 2026-08-14 — 0.15 stacked restaurant menu sheet
 
 - Moved Menu from an in-place Overview/Menu transformation into the restaurant card's top action row, matching the five-button reference layout when Directions, Call, Website, Menu, and More are available.

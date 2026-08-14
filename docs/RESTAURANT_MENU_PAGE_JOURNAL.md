@@ -1,5 +1,5 @@
 ## CURRENT STATE / NEXT STEP   (updated 2026-08-14 UTC)
-- GOAL: Present source-backed restaurant menus in a separate Google-style sheet opened from a Menu action in the place card's top action row.
+- GOAL: Present source-backed restaurant menus in a separate Google-style sheet and expose Apple's other available transactional place actions in the top action row.
 - DONE (verified): The live target is the clean `applemaps-consumer-nav` repository at `bee694d`; the older `applemaps-nav-lean` tree has extensive concurrent changes and is out of scope.
 - DONE (verified): `Place` has no menu model, `ApplePlaceClient.parsePlace` does not parse menu components, and the configured Google Places fields stop at place details/reviews/photos/price level.
 - SUPERSEDED: v0.14's in-place Overview/Menu implementation was built and tested, then replaced by the user-requested v0.15 stacked-sheet interaction below.
@@ -12,8 +12,43 @@
 - TEST LIMIT: Yelp blocked this emulator route, so the separate sheet's unavailable/source fallback is UI-verified; loaded item rows, category filtering, photos, and scrolling remain parser/build verified but physical-network UI-unverified.
 - DONE (verified): Final assembly succeeded; the exact v0.15 APK is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-stacked-menu-debug.apk`, and a fresh HTTPS download returned HTTP 200 with matching 237,670,600-byte size and SHA-256 `2d9265dce227add1b8116b71ebe4a37a57f2bd27564028a023ed2f46cfcf9f6f`.
 - DONE (verified): Codex-owned scoped finalization created on-box commit `0b6b050` (`Open restaurant menus in a stacked sheet`) containing exactly the seven corrected source, documentation, metadata, and canonical APK paths; no push was requested or performed.
-- NEXT STEP: User installs the published v0.15 APK and tests a restaurant menu on their normal phone network; source-reachable loaded rows remain the only explicit UI verification gap.
+- DONE (verified): v0.16 compiles, all 46 debug unit tests pass, Android lint completes, and debug assembly produces a 237,686,968-byte APK with SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`.
+- DONE (verified): The exact v0.16 canonical APK is installed on Redroid; real UI input verified Order, Reserve, Showtimes, Tickets, horizontal overflow, shared external-link handoff, and the unchanged stacked Menu/Back behavior without a scoped crash/ANR signature.
+- DONE (verified): v0.16 is published at `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-place-actions-debug.apk`; a fresh HTTPS download returned HTTP 200 and matched the source's 237,686,968 bytes and SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`.
+- IN PROGRESS: Run the final scoped diff review and finalize only the eight v0.16 paths while preserving concurrent GitHub-publishing files.
+- TODO (parked): Replace the tiny placeholder bullets on every amenity/list row with proper leading icons appropriate to each item, including hotel services, room features, accessibility/payment rows, and facility lists shown in the supplied SpringHill Suites screenshots.
+- NEXT STEP: Verify the final diff/test/artifact state, fire Codex-owned scoped finalization for the eight v0.16 paths, and confirm the resulting commit without touching `.github/` or `docs/GITHUB_PUBLISH_JOURNAL.md`.
 - KEY PATHS: `app/src/main/java/com/example/applemaps/map/Place.kt`, `app/src/main/java/com/example/applemaps/map/ApplePlaceClient.kt`, `app/src/main/java/com/example/applemaps/ui/PlaceCard.kt`.
+
+### 2026-08-14 UTC — Amenity/list icon follow-up captured
+- VERIFIED: The four supplied SpringHill Suites screenshots show many amenity rows using tiny placeholder bullets while payment rows already have specific card/Apple Pay icons.
+- DECISION: Proper leading icons for all such list rows are recorded as a separate TODO and are not part of the in-progress transactional-action build.
+
+### 2026-08-14 UTC — v0.16 source/build verification passed
+- VERIFIED: `:app:testDebugUnitTest :app:lintDebug :app:assembleDebug` returned `BUILD SUCCESSFUL in 6m 51s` with process-local Android SDK variables.
+- VERIFIED: The debug unit result contains 46 tests, 0 failures, 0 errors, and 0 skipped tests; lint completed and assembly produced 237,686,968 bytes with SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`.
+- VERIFIED: Compilation confirms all existing `Place` construction sites remain source-compatible through the new default-empty action list.
+
+### 2026-08-14 UTC — v0.16 real-UI action verification
+- VERIFIED: Installed package state reports versionCode 15 / versionName `0.16-place-actions`, matching the canonical root APK.
+- VERIFIED: Real search/result taps rendered Order for Sisters, Reserve for 230 Fifth Rooftop Bar, Showtimes for AMC Empire 25 (Apple category `Movie Theater`), and Tickets for The Metropolitan Museum of Art (Apple category `Art Museum`).
+- VERIFIED: Swiping the Sisters and 230 Fifth action rows exposed all fixed-width overflow items; The Met's five actions remained evenly distributed without scrolling.
+- VERIFIED: Tapping Sisters Order opened `https://www.doordash.com/store/964995?src=ac` in Android's external WebView browser activity, proving the shared external-action click path hands off Apple's exact URL.
+- VERIFIED: Tapping Menu still opened its independent Sisters/Menu sheet, and Android Back restored the original scrolled action row.
+- VERIFIED: The app process remained present and scoped logcat contained no fatal-exception, app-process-death, or ANR signature after the UI sequence.
+- TEST LIMIT: The external DoorDash page itself stopped at its own Cloudflare human-verification screen; that third-party page outcome is outside the app's URL-handoff behavior.
+
+### 2026-08-14 UTC — v0.16 HTTPS artifact verified
+- VERIFIED: The canonical root APK and Caddy-served copy are both 237,686,968 bytes with SHA-256 `84e51a80e97c2eb3720d786ba5baa128c2c701040a7498c2ce7ea8e4e543d5d4`.
+- VERIFIED: A fresh download from `https://204-168-163-118.sslip.io/trackers/static/applemaps-consumer-nav-place-actions-debug.apk` returned HTTP 200 and matched the canonical root APK byte-for-byte.
+- VERIFIED: Concurrent work created `.github/workflows/android-ci.yml` and `docs/GITHUB_PUBLISH_JOURNAL.md`; those paths are unrelated to v0.16 and are deliberately excluded from this task's scoped finalization.
+
+### 2026-08-14 UTC — v0.16 final self-review
+- VERIFIED: The exact eight-path diff passes `git diff --check`; all new model fields are defaulted, all construction/call sites compile, and the only live renderer/parser entry points were updated together.
+- VERIFIED: The parser rejects non-HTTPS links, resolves Apple's winning provider first, falls back deterministically, collapses order variants, and omits unsupported categories; exact-shape tests cover provider preference, fallback, deduplication, and cinema labeling.
+- VERIFIED: No network operation, permission, lifecycle resource, background task, API-level dependency, or physics animation was added. External launch uses the existing guarded intent helper.
+- VERIFIED: Real UI use covered five-item equal widths, six-item overflow scrolling, all four labels/icons, shared external handoff, Menu stacking, Back restoration, and post-run process/crash state.
+- VERIFIED: In-file KDoc identifies the source-backed actions, user-facing labels, parser/rendering flow, visual row, test path, and proven status; `CHANGELOG.md`, this journal, and Codex memory are current.
 
 ### 2026-08-14 UTC — Target and data gap established
 - VERIFIED: Git status in `applemaps-consumer-nav` is clean on branch `hk/fix-consumer-map-directions-and-navigati` at `bee694d`.
@@ -110,3 +145,18 @@
 ### 2026-08-14 UTC — v0.15 scoped finalization verified
 - VERIFIED: Codex-owned finalization completed as commit `0b6b050` (`Open restaurant menus in a stacked sheet`) on `hk/fix-consumer-map-directions-and-navigati`, scoped to the seven intended v0.15 paths.
 - VERIFIED: No GitHub push was requested or performed.
+
+### 2026-08-14 UTC — Transactional actions contract and PRE-BUILD RISK PASS
+- VERIFIED: Live Apple place payloads for Sisters, 230 Fifth, Per Se, AMC Empire 25, Regal Union Square, The Metropolitan Museum of Art, and Broadway Theatre expose transactional links through `COMPONENT_TYPE_ACTION_DATA` and/or `COMPONENT_TYPE_QUICK_LINK`.
+- VERIFIED: Observed stable category IDs include `quicklinks.restaurant_reservation`, `quicklinks.restaurant_order_food`, `quicklinks.restaurant_order_delivery`, `quicklinks.restaurant_pickup`, and `quicklinks.buy_tickets`. Observed Apple titles/symbols include Reserve/calendar.badge.clock, Order/takeoutbag, Tickets/ticket.fill, and Shows/calendar.
+- VERIFIED: Movie theaters such as AMC Empire 25 and Regal Union Square are categorized `Movie Theater` and expose `quicklinks.buy_tickets` URLs that lead to showtime/movie pages. Museums and live theaters expose the same category for general ticket purchasing.
+- VERIFIED: Some action-data entries omit usable links while the parallel quick-link entry contains the real HTTPS URL (230 Fifth Reserve); therefore parsing only one component would silently omit valid actions.
+- DECISION: Merge both Apple components. Prefer the action-data provider matching `winningAdamId`, fall back to the first HTTPS action-data link, then the matching HTTPS quick link. Never synthesize a URL.
+- DECISION: Map buy-tickets to Showtimes only when the parsed Apple category is `Movie Theater`; otherwise label it Tickets. Ignore generic `quicklinks.events.shows` because it represents venue events/exhibits, not necessarily showtimes.
+- DECISION: Collapse order-food/delivery/pickup variants to one Order action, preferring Apple action-data order before delivery/pickup and falling back to Order/Delivery/Pickup quick-link titles.
+- ASSUMPTION — VERIFIED: `Place` uses defaulted fields, so adding a default-empty action list preserves all existing positional constructor call sites.
+- PRECONDITION: Each displayed action must have a non-empty HTTPS URL supplied by Apple. Missing/HTTP/unsupported actions remain absent.
+- ALL ENTRY POINTS: Apple `parsePlace` is the single rich Apple-place parser; `PlaceCardHeader` is the single live place action-row renderer. Tests must cover parser output and action deduplication.
+- CROSS-CUTTING: Actions launch normal `ACTION_VIEW` intents; no network work, permission, lifecycle resource, or API-level dependency is added. The row must use equal widths for five or fewer actions and horizontal scrolling with fixed widths above five.
+- OBSERVABILITY: Button presence and labels directly expose parsed availability; tapping hands the exact source URL to Android. No silent placeholder button is shown.
+- VERIFICATION REACHABILITY: Saved real Apple payload shapes back exact unit fixtures; unit/lint/build cover parsing and integration. Redroid can verify Sisters adds Order and that the six-action row scrolls while Menu still opens its separate sheet. Tickets/Showtimes/Reserve rendering require selecting corresponding live venues.

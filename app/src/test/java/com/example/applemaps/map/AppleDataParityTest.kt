@@ -48,7 +48,12 @@ class AppleDataParityTest {
               {"location":{"lat":60.320,"lng":24.970},"drivingDirection":"ENTRY"}
             ]}}]},
             {"type":"COMPONENT_TYPE_FACTOID","value":[{"factoid":{"entryType":"ELEVATION","number":55.0}}]},
+            {"type":"COMPONENT_TYPE_ACTION_DATA","value":[
+              {"actionData":{"categoryId":"quicklinks.restaurant_reservation","winningAdamId":"111","actionLink":[{"appAdamId":"222","link":[{"quickLinkParams":{"url":"https://wrong.example/reserve"}}]},{"appAdamId":"111","link":[{"quickLinkParams":{"url":"https://reserve.example/airport"}}]}]}},
+              {"actionData":{"categoryId":"quicklinks.restaurant_order_food","actionLink":[]}}
+            ]},
             {"type":"COMPONENT_TYPE_QUICK_LINK","value":[{"quickLink":{"quickLinkItem":[
+              {"title":"Reserve","url":"https://fallback.example/reserve"},
               {"title":"Order","url":"https://order.example/airport"},
               {"title":"Menu","url":"https://restaurant.example/airport-menu"}
             ]}}]}
@@ -86,7 +91,29 @@ class AppleDataParityTest {
         assertEquals(listOf("Coffee Shops"), place?.airportDetails?.browseCategories?.last()?.subcategories)
         assertEquals(2, place?.airportDetails?.accessPoints?.size)
         assertEquals(55.0, place?.airportDetails?.elevationMeters ?: 0.0, 0.0)
+        assertEquals(listOf(PlaceActionKind.RESERVE, PlaceActionKind.ORDER), place?.placeActions?.map { it.kind })
+        assertEquals(
+            listOf("https://reserve.example/airport", "https://order.example/airport"),
+            place?.placeActions?.map { it.url },
+        )
         assertEquals("https://restaurant.example/airport-menu", place?.menuUrl)
+    }
+
+    @Test fun movieTheaterTicketActionIsLabeledAsShowtimes() {
+        val shell = """
+          {"initialState":{"placeCache":{"cinema":{"component":[
+            {"type":"COMPONENT_TYPE_ENTITY","value":[{"entity":{"name":[{"stringValue":"AMC Empire 25"}],"localizedCategory":[{"level":2,"localizedName":[{"stringValue":"Movie Theater"}]}]}}]},
+            {"type":"COMPONENT_TYPE_ACTION_DATA","value":[{"actionData":{"categoryId":"quicklinks.buy_tickets","actionLink":[{"link":[{"quickLinkParams":{"url":"https://cinema.example/showtimes"}}]}]}}]}
+          ]}}}}
+        """.trimIndent()
+        val place = ApplePlaceClient.parsePlace(
+            "AMC Empire 25",
+            0.0,
+            0.0,
+            """<script id="shell-props" type="application/json">$shell</script>""",
+        )
+        assertEquals(PlaceActionKind.SHOWTIMES, place?.placeActions?.single()?.kind)
+        assertEquals("https://cinema.example/showtimes", place?.placeActions?.single()?.url)
     }
 
     @Test fun coverageParserPreservesUnsignedIdsCoordinatesAndSixCalibrations() {
