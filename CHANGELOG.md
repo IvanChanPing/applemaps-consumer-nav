@@ -1,5 +1,12 @@
 # Changelog
 
+- Reframed the README around user benefits and added map, place, routing, and navigation screenshots.
+
+## 2026-09-02 — Promotional README and screenshot gallery
+
+- Reframed the project overview around the experience and user benefits instead of implementation details.
+- Added four real app screenshots covering map exploration, place details, route planning, and navigation.
+
 ## 2026-08-14 — GitHub main integration
 
 - Integrated the v0.16 source branch with `main` while retaining the existing GitHub Release workflow and its AndroidView map-input regression coverage.

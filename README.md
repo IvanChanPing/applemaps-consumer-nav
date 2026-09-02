@@ -1,42 +1,24 @@
-# Apple Maps Consumer Navigation
+# Apple Maps for Android
 
-Separate Android application copied from the completed Apple Maps-style UI and installed as
-`com.example.applemaps.consumernav`.
+Bring a familiar Apple Maps experience to Android—from discovering a new place to arriving at the door.
 
-The native Compose controls, three-detent sheets, place cards, search, directions planner, Look Around viewer,
-photo gallery, and Ferrostar navigation UI are retained. Browsing and Directions preview use one persistent WebView,
-hosted directly inside the Compose map surface, that loads consumer `https://maps.apple.com/`. The page owns its normal
-Apple session, vector/WebGL rendering, and browser cache; this project does not accept a MapKit developer token.
+- **Explore beautifully detailed maps** with Standard, Satellite, and Hybrid views.
+- **Discover what is nearby** and search for restaurants, landmarks, shops, parks, and more.
+- **Know before you go** with rich place cards, photos, ratings, opening hours, and Look Around.
+- **Plan the trip your way** with driving, walking, and cycling routes, alternate choices, departure times, road preferences, and multiple stops.
+- **Stay on course** with turn-by-turn guidance, clear maneuver cards, voice directions, route progress, overview, and one-tap recentering.
+- **Share the places you love** directly through Android's share menu.
 
-The Android bridge controls only the live consumer map instance exposed by that page:
+## See it in action
 
-- Standard, Satellite, and Hybrid map types
-- Apple place selection with Apple's native selected annotation and native sheet handoff
-- native Apple markers for app-origin search and long-press selections
-- current-location dot
-- route alternatives, traffic-colored route segments, and reveal without an app-forced camera fit
-- turn-by-turn route progress, heading follow, pan/zoom pause, and always-visible compass after GO
+<p align="center">
+  <img src="docs/screenshots/explore.png" alt="Explore Apple Maps on Android" width="23%" />
+  <img src="docs/screenshots/place-details.png" alt="Rich place details with photos and ratings" width="23%" />
+  <img src="docs/screenshots/route-planning.png" alt="Compare route choices and travel times" width="23%" />
+  <img src="docs/screenshots/navigation.png" alt="Turn-by-turn navigation with route overview" width="23%" />
+</p>
 
-The green GO action keeps that same Apple consumer renderer mounted beneath the Ferrostar navigation overlay. Route
-progress trims the traveled line, the existing navigation arrow follows the current snapped location and heading,
-a real map gesture pauses camera following, Recenter resumes it, and Exit restores the route planner. The app does
-not switch to a MapLibre/Mapbox basemap during navigation.
-
-The WebView receives pan, pinch, rotate, tap, and long-press input through Compose's native Android View interop.
-Opening Directions or selecting a route adds route overlays without calling a bridge-owned bounds/camera fit, so the
-consumer map retains its current camera and receives map-region gestures directly around the visible native sheets.
-
-The Directions card's blue **+ Add Stop** row opens the existing place search. Selecting a result appends a via stop;
-selecting an existing stop row uses the same search to replace it.
-
-The native search overlay remains unchanged. The home tray refreshes from Apple's region-scoped `/data/search-home`
-response after the current map camera settles, so Find Nearby labels/order and Guides—including current publisher,
-title, and hero image—follow Apple's newest response rather than a bundled snapshot. Opening a category or Guide uses
-the same bounded device-local client pattern as rich place photos and Look Around. The hidden consumer page enters
-the same category/Guide state so Apple's native map markers remain synchronized.
-
-Directions/place providers remain the copied app's existing providers. Google's Road Level Details map remains a
-separate optional screen and is not the basemap renderer.
+Search, explore, plan, and navigate in one polished experience designed to make every journey feel effortless.
 
 ## Build
 
