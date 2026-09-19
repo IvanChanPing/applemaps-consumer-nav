@@ -1,5 +1,7 @@
 # Changelog
 
+- 2026-09-19 18:23 UTC — Added Apple-style Transit planning handoff: fourth mode, schedule-aware departure handoff, Vela itinerary chooser ownership, preview readiness, unsupported-stop clearing, and settled completion monitoring. Static contract checks pass; Android build and real UI remain pending.
+
 - Reframed the README around user benefits and added map, place, routing, and navigation screenshots.
 
 ## 2026-09-02 — Promotional README and screenshot gallery

@@ -168,6 +168,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     var menuOpen by remember { mutableStateOf(false) }
     var directionsRoutes by remember { mutableStateOf<List<com.example.applemaps.map.Route>?>(null) }   // route options while in directions mode
     var directionsError by remember { mutableStateOf<String?>(null) }
+    var transitPreviewReady by remember { mutableStateOf(false) }
     var routeRequestId by remember { mutableStateOf(0) }
     var lastDir by remember { mutableStateOf<List<com.example.applemaps.map.Route>?>(null) }   // retained so the directions sheet keeps its content while sliding out
     var selectedRoute by remember { mutableStateOf(0) }
@@ -315,17 +316,20 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
     //    icon shows again ("back to the icon") — collapsing a POI to a circular dot was the wrong behavior.
     fun dismissCard() {
         selectionGeneration++
-        place = null; isStation = false; stationInfo = null; placeLoading = false; menuOpen = false; directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList()
+        place = null; isStation = false; stationInfo = null; placeLoading = false; menuOpen = false; directionsRoutes = null; directionsError = null; transitPreviewReady = false; stops.value = emptyList(); stopLabels.value = emptyList()
         if (!pinIsDropped) { pin = null; pinFace = null; pinLabel = "Marked Location"; minimized = false } else { minimized = true }
         RouteLayer.clear(mapController)
     }
 
-    // Compute routes origin(=user loc)→[stops]→dest and draw them; used by Directions, the mode toggle, and Add Stop.
+    // Purpose/Invocation: refresh the Apple preview after Directions, mode, stop, or Avoid changes.
+    // Contract: road modes resolve host Route cards; Transit stops after the Apple Web preview because Vela owns
+    // itinerary details. Verification: TransitHandoffContractTest guards the early Transit ownership branch.
     fun recomputeDirections() {
         val dest = (place ?: lastPlace) ?: return
         val requestId = ++routeRequestId
         directionsRoutes = emptyList()
         directionsError = null
+        transitPreviewReady = false
         RouteLayer.clear(mapController)
         scope.launch {
             runCatching {
@@ -338,6 +342,16 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                 val d = dest.routeCoordinate(dirMode, o)
                 if (!mapController.showConsumerDirections(o, d, dirMode, stops.value, avoidTolls, avoidHighways)) {
                     if (requestId == routeRequestId) directionsError = "The selected route cannot be shown on Apple Maps."
+                    return@launch
+                }
+                // Apple Web owns the Transit preview; Vela owns its schedule-aware itinerary chooser.
+                // Keeping an empty native list is intentional because the host Route model has no transit legs.
+                if (dirMode == "Transit") {
+                    if (requestId == routeRequestId) {
+                        directionsRoutes = emptyList()
+                        selectedRoute = 0
+                        transitPreviewReady = true
+                    }
                     return@launch
                 }
                 // Avoid set → route via Valhalla (honors use_tolls/use_highways keyless); else the normal chain.
@@ -640,15 +654,27 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
             if (rs != null && idx in rs.indices) selectedRoute = idx
         }
         val exitDirections: () -> Unit = {
-            directionsRoutes = null; directionsError = null; stops.value = emptyList(); stopLabels.value = emptyList()
+            directionsRoutes = null; directionsError = null; transitPreviewReady = false; stops.value = emptyList(); stopLabels.value = emptyList()
             RouteLayer.clear(mapController)
             cardPlace?.let(mapController::showConsumerPlace)
         }
-        // GO backgrounds this Apple Activity and hands the destination to Vela's full navigation screen.
-        // Vela owns its route, map, voice, reroutes, and Exit; finishing it reveals this unchanged planner.
+        // Purpose/Invocation: GO/VIEW backgrounds this Apple Activity and hands its planner state to Vela.
+        // Contract: roads pass the selected route endpoint; Transit passes the place and departure offset, then
+        // lets Vela present complete itinerary choices. Verification: TransitHandoffContractTest guards both paths.
         val startNav: () -> Unit = {
             val rs = directionsRoutes
-            if (rs != null && rs.isNotEmpty()) {
+            if (dirMode == "Transit" && cardPlace != null) {
+                directionsError = null
+                context.startActivity(
+                    com.example.applemaps.VelaNavigationActivity.intent(
+                        context = context,
+                        destination = MapCoordinate(cardPlace.lat, cardPlace.lon),
+                        label = cardPlace.name,
+                        mode = dirMode,
+                        departOffsetMin = departOffsetMin,
+                    ),
+                )
+            } else if (rs != null && rs.isNotEmpty()) {
                 val selectedIndex = selectedRoute.coerceIn(0, rs.lastIndex)
                 val route = rs[selectedIndex].points
                 if (route.size >= 2) {
@@ -659,6 +685,7 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                             destination = route.last(),
                             label = cardPlace?.name.orEmpty(),
                             mode = dirMode,
+                            departOffsetMin = departOffsetMin,
                         ),
                     )
                 }
@@ -794,8 +821,14 @@ fun AppleMapsScreen(mapController: ConsumerMapController) {
                     body = {
                         val dr = directionsRoutes ?: lastDir
                         if (dr != null) DirectionsBody(cardPlace, dr, selectedRoute, dirMode,
-                            onMode = { dirMode = it; recomputeDirections() }, onSelect = selectRoute, onGo = startNav,
+                            onMode = {
+                                dirMode = it
+                                // Transit has no intermediate-stop contract in this handoff; never keep hidden road stops.
+                                if (it == "Transit") { stops.value = emptyList(); stopLabels.value = emptyList() }
+                                recomputeDirections()
+                            }, onSelect = selectRoute, onGo = startNav,
                             stopCount = stops.value.size, stopLabels = stopLabels.value, routeError = directionsError,
+                            transitReady = transitPreviewReady,
                             // addStopRow — blue "+ Add Stop" row in the iOS-style From/To card; opens search and appends.
                             onAddStop = { editingStopIndex = stops.value.size; searchActive = true },
                             onRemoveStop = { i -> stops.value = stops.value.toMutableList().also { if (i in it.indices) it.removeAt(i) }; stopLabels.value = stopLabels.value.toMutableList().also { if (i in it.indices) it.removeAt(i) }; recomputeDirections() },
