@@ -78,12 +78,17 @@ import java.util.Calendar
 import kotlin.math.roundToInt
 
 /**
- * Directions preview sheet, shown after tapping Directions on a place. All planner + route-card values traced
- * from maps.apple.com's directions sheet (2026-07-14): 3 mode pills (r12, selected solid blue #007AFF/white
+ * Purpose: directions preview shown after tapping Directions on a place.
+ * Invocation: [AppleMapsScreen] supplies the selected place, current mode, route state, and actions.
+ * Contract: road modes render host [Route] cards; Transit delegates complete itinerary selection to Vela.
+ * Verification: [TransitHandoffContractTest] guards the Transit mode and ownership boundary.
+ * Visual: all planner + route-card values traced
+ * from maps.apple.com's directions sheet (2026-07-14): 4 mode pills (r12, selected solid blue #007AFF/white
  * icon, else gray track), white From/To card with reorder handles + dotted connector, Now/Avoid pills, and the
  * route-option cards — the SELECTED route is a full blue card, alternatives are white, each "N min" (large
  * bold) + "H:MM PM ETA · X.X mi" + descriptor + info (i). The green GO/navigate button is the iOS-screenshot
- * addition (the web has no navigate action), placed on the selected route.
+ * addition (the web has no navigate action), placed on the selected route. Transit keeps the same planner
+ * shell but hands itinerary selection to Vela so lines, transfers, and scheduled departures remain intact.
  */
 
 private data class Mode(val key: String, val icon: Int, val api: String)
@@ -91,6 +96,7 @@ private val MODES = listOf(
     Mode("Drive", R.drawable.ic_mode_car_fill, "DRIVE"),
     Mode("Walk", R.drawable.ic_mode_walk, "WALK"),
     Mode("Cycle", R.drawable.ic_mode_bicycle, "BICYCLE"),
+    Mode("Transit", R.drawable.ic_tram_fill, "TRANSIT"),
 )
 fun modeApi(key: String): String = MODES.firstOrNull { it.key == key }?.api ?: "DRIVE"
 fun osrmProfile(key: String): String = when (key) { "Walk" -> "foot"; "Cycle" -> "bike"; else -> "car" }   // FOSSGIS routed-* profile
@@ -120,7 +126,13 @@ fun DirectionsHeader(onShare: () -> Unit, onClose: () -> Unit) {
     }
 }
 
-/** Body: mode toggle · From/To card · Now/Avoid · the route-option cards (selected = blue + GO). */
+/**
+ * Purpose: compose the interactive planner controls and route-choice area.
+ * Invocation: rendered inside the dedicated directions [AppleBottomSheet].
+ * Contract: Transit exposes departure time and VIEW, while road modes retain their route cards and GO action.
+ * Verification: [TransitHandoffContractTest] checks that Transit uses [TransitHandoffCard].
+ * Visual: mode toggle · From/To card · Now/Avoid · route cards or the white Transit bridge card.
+ */
 @Composable
 fun DirectionsBody(
     place: Place, routes: List<Route>, selected: Int, mode: String,
@@ -131,29 +143,70 @@ fun DirectionsBody(
     avoidTolls: Boolean = false, avoidHighways: Boolean = false, onAvoid: (Boolean, Boolean) -> Unit = { _, _ -> },
     onInfo: (Int) -> Unit = {},
     routeError: String? = null,
+    transitReady: Boolean = false,
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
         ModeToggle(mode, onMode)
         Spacer(Modifier.height(14.dp))
         FromToCard(place, stopCount, stopLabels, onAddStop, onRemoveStop, onEditStop, onReorderStop, showAddStop = mode == "Drive")
         Spacer(Modifier.height(14.dp))
-        Row {   // Apple shows the "Now" departure-time pill ONLY for driving; walking/cycling get Avoid only
-            if (mode == "Drive") { NowPill(departOffsetMin, onDepart); Spacer(Modifier.width(10.dp)) }
-            AvoidPill(avoidTolls, avoidHighways, onAvoid)
+        Row {
+            // Scheduled Transit and Drive expose departure time; road avoidance does not apply to Transit.
+            if (mode == "Drive" || mode == "Transit") { NowPill(departOffsetMin, onDepart); Spacer(Modifier.width(10.dp)) }
+            if (mode != "Transit") AvoidPill(avoidTolls, avoidHighways, onAvoid)
         }
         Spacer(Modifier.height(16.dp))
-        // P1 2.6: new route options crossfade in on mode change / reroute instead of flashing in one frame
-        Crossfade(routes to routeError, animationSpec = tween(150, easing = AppleEasing.Standard), label = "routeList") { (rs, error) ->
+        if (mode == "Transit") {
             when {
-                error != null -> Text(error, fontSize = 15.sp, color = SUBGRAY, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(16.dp))
-                rs.isEmpty() -> Text("Finding routes…", fontSize = 15.sp, color = SUBGRAY, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(16.dp))
-                else -> Column {
-                    rs.forEachIndexed { i, r ->
-                        RouteCard(r, i == selected, i, departOffsetMin, mode, onGo = onGo, onSelect = { onSelect(i) }, onInfo = { onInfo(i) })
-                        Spacer(Modifier.height(12.dp))
+                routeError != null -> Text(routeError, fontSize = 15.sp, color = SUBGRAY, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(16.dp))
+                transitReady -> TransitHandoffCard(onGo)
+                else -> Text("Finding transit options…", fontSize = 15.sp, color = SUBGRAY, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(16.dp))
+            }
+        } else {
+            // P1 2.6: new route options crossfade in on mode change / reroute instead of flashing in one frame
+            Crossfade(routes to routeError, animationSpec = tween(150, easing = AppleEasing.Standard), label = "routeList") { (rs, error) ->
+                when {
+                    error != null -> Text(error, fontSize = 15.sp, color = SUBGRAY, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(16.dp))
+                    rs.isEmpty() -> Text("Finding routes…", fontSize = 15.sp, color = SUBGRAY, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(Color.White).padding(16.dp))
+                    else -> Column {
+                        rs.forEachIndexed { i, r ->
+                            RouteCard(r, i == selected, i, departOffsetMin, mode, onGo = onGo, onSelect = { onSelect(i) }, onInfo = { onInfo(i) })
+                            Spacer(Modifier.height(12.dp))
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Purpose: Apple-style bridge card for scheduled transit.
+ * Invocation: replaces road route cards whenever Transit is selected and preview loading succeeded.
+ * Contract: does not flatten transit legs into [Route]; VIEW opens Vela with departure time preserved.
+ * Verification: [TransitHandoffContractTest] guards this branch and the Vela handoff contract.
+ * Visual: white rounded card, blue circular tram glyph, two-line summary, and compact blue VIEW button.
+ */
+@Composable
+private fun TransitHandoffCard(onView: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(Color.White).padding(18.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(44.dp).clip(CircleShape).background(ACCENT), contentAlignment = Alignment.Center) {
+            Image(painterResource(R.drawable.ic_tram_fill), null, Modifier.size(24.dp), colorFilter = ColorFilter.tint(Color.White))
+        }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Transit options", fontSize = 19.sp, fontWeight = FontWeight.SemiBold, color = LABEL)
+            Text("Compare departures, lines, and transfers", fontSize = 14.sp, color = SUBGRAY, modifier = Modifier.padding(top = 2.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Box(
+            Modifier.height(44.dp).clip(RoundedCornerShape(12.dp)).background(ACCENT).clickable(onClick = onView).padding(horizontal = 16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("VIEW", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.White)
         }
     }
 }
